@@ -1,0 +1,46 @@
+load('../../Tiltfile', 'grafana_dockerfile_contents', 'live_updates', 'load_plugins')
+
+## Utility Functions
+def sync1(a, b):
+    return "%s -> %s" % (a, b)
+
+def dummy_run(command, trigger):
+    return str(command) + str(trigger)
+
+def write_json(path, content):
+    local('cat > %s' % path,
+            stdin=encode_json(content),
+            echo_off=True,
+            quiet=True)
+    watch_settings(ignore=path)
+
+
+## single plugin, in the same directory at the the tiltfile
+def test_single_plugin_in_same_dir_as_tiltfile():
+    plugins = load_plugins(os.path.abspath('plugin-three'), ['plugin-three/src/plugin.json'], run_func=dummy_run)
+    plugin = plugins['grafana-three-app']
+        
+    # expected = struct()
+    if plugin.plugin_dir != '.':
+        fail('plugin dir should be at the root of the tree. Expected "%s" got "%s"' % ('.', plugin.plugin_dir))
+    if plugin.plugin_dist_dir != './dist':
+        fail('plugin dist dir should be at the root of the tree. Expected "%s" got "%s"' % ('dist', plugin.plugin_dist_dir))
+
+
+test_single_plugin_in_same_dir_as_tiltfile()
+print()
+
+def test_multiple_apps_managed_by_this_grafana():
+    plugins = load_plugins(os.path.abspath('..'), ['../app-one/grafana-plugin/src/plugin.json', '../app-two/grafana-plugin/src/plugin.json'], run_func=dummy_run)
+    print(plugins)
+
+    if plugins['grafana-one-app'].plugin_dir != 'app-one/grafana-plugin':
+        fail('plugin dir should be at the root of the parent dir. Expected "%s" got "%s"' % ('app-one/grafana-plugin', plugins['grafana-one-app'].plugin_dir))
+    if plugins['grafana-one-app'].plugin_dist_dir != 'app-one/grafana-plugin/dist':
+        fail('plugin dir should be at the root of the parent dir. Expected "%s" got "%s"' % ('app-one/grafana-plugin/dist', plugins['grafana-one-app'].plugin_dist_dir))
+
+test_multiple_apps_managed_by_this_grafana()
+print()
+
+# Without at least one real resource, `tilt ci` exits with code 1 😅
+local_resource('test_success', 'echo ✨ tests succeeded')
