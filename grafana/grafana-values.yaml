@@ -13,7 +13,7 @@ grafana.ini:
   analytics:
     reporting_enabled: false
   auth.anonymous:
-  #  enabled: true
+    enabled: true
     org_role: Admin
   security:
     admin_user: admin

@@ -115,7 +115,9 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     chart_values['service']['nodePort'] = '3000'
 
     # Set the env vars
-    chart_values['env'] = extra_env
+    chart_values['env'] = {}
+    chart_values['env'].update(extra_env)
+    # chart_values['env']['GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION'] = 'true'
 
     chart_values['image'] = {}
     chart_values['image']['repository'] = image_repository
