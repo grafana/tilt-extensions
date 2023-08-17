@@ -153,6 +153,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     # Deploy the chart
     helm_remote('grafana',
                 repo_name='grafana',
+                repo_url='https://grafana.github.io/helm-charts',
                 namespace=namespace,
                 create_namespace=True,
                 values=[rendered_values])
