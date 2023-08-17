@@ -9,7 +9,7 @@ load('ext://secret', 'secret_from_dict')
 load('ext://local_output', 'local_output')
 
 if os.getenv("TMPDIR") == None:
-    os.putenv["TMPDIR"] = "/tmp"
+    os.putenv("TMPDIR", "/tmp")
 
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
 def grafana_dockerfile_contents(context_dir, configs, grafana_version):
