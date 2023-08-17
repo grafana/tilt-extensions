@@ -88,7 +88,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     # This is the docker image we are about to build
     image_repository = "grafana/grafana"
     # TODO: Make this configurable
-    image_tag = 'ops-plugins'
+    image_tag = 'ops-devenv'
     docker_build("%s:%s" % (image_repository, image_tag),
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_version),
                 context             = context,
@@ -117,7 +117,6 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     # Set the env vars
     chart_values['env'] = {}
     chart_values['env'].update(extra_env)
-    # chart_values['env']['GF_SECURITY_DISABLE_INITIAL_ADMIN_CREATION'] = 'true'
 
     chart_values['image'] = {}
     chart_values['image']['repository'] = image_repository
@@ -140,15 +139,15 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
 
     # Write the values file as helm_remote wants the values file on disk
-    rendered_values = os.path.dirname(os.getenv("TMPDIR")) + '/rendered-grafana-values.yaml'
+    # rendered_values = os.path.dirname(os.getenv("TMPDIR")) + '/rendered-grafana-values.yaml'
+    # Hopefully this wont break on Windows
+    rendered_values = local('mktemp')
     # Trick to write to a local file from a string
     # https://github.com/tilt-dev/tilt/issues/4827
     local('cat > %s' % rendered_values,
           stdin=encode_yaml(chart_values),
           echo_off=True,
           quiet=True)
-    # Tell Tilt to not watch the values file
-    watch_settings(ignore=rendered_values)
 
     # Deploy the chart
     helm_remote('grafana',
@@ -157,5 +156,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
                 namespace=namespace,
                 create_namespace=True,
                 values=[rendered_values])
+    # Tell Tilt to not watch the values file
+    watch_settings(ignore=rendered_values)
                 
     k8s_resource('grafana', port_forwards=3000, labels=['Grafana'], resource_deps=deps)
