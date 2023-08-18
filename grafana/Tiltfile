@@ -139,9 +139,8 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
 
     # Write the values file as helm_remote wants the values file on disk
-    # rendered_values = os.path.dirname(os.getenv("TMPDIR")) + '/rendered-grafana-values.yaml'
-    # Hopefully this wont break on Windows
-    rendered_values = local('mktemp')
+    # The os.path.realpath() is to work around https://github.com/tilt-dev/tilt/issues/6200
+    rendered_values = rendered_values = os.path.realpath(os.path.dirname(os.getenv("TMPDIR")) + '/rendered-grafana-values.yaml'
     # Trick to write to a local file from a string
     # https://github.com/tilt-dev/tilt/issues/4827
     local('cat > %s' % rendered_values,
