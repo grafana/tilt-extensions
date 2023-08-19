@@ -1,0 +1,50 @@
+load('../Tiltfile', 'var_subst')
+
+def assert_equals(actual, expected, msg=""):
+    """Custom assert function to check if actual equals expected."""
+    if actual != expected:
+        fail_msg = "Expected '{}', got '{}'".format(expected, actual)
+        if msg:
+            fail_msg += " - " + msg
+        fail(fail_msg)
+
+def test_substitute_with_existing_var():
+    env = {"FOO": "SomeValue"}
+    template = "Hello, ${FOO}!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, SomeValue!")
+
+def test_substitute_with_missing_var_no_default():
+    env = {}
+    template = "Hello, ${FOO}!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, !")
+
+def test_substitute_with_missing_var_with_default():
+    env = {}
+    template = "Hello, ${FOO:-DefaultValue}!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, DefaultValue!")
+
+def test_substitute_with_existing_var_and_default():
+    env = {"FOO": "SomeValue"}
+    template = "Hello, ${FOO:-DefaultValue}!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, SomeValue!")
+
+def test_substitute_with_malformed_pattern():
+    env = {}
+    template = "Hello, ${FOO!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, ${FOO!")
+
+def run_tests():
+    test_substitute_with_existing_var()
+    test_substitute_with_missing_var_no_default()
+    test_substitute_with_missing_var_with_default()
+    test_substitute_with_existing_var_and_default()
+    test_substitute_with_malformed_pattern()
+    print("All tests passed!")
+
+# Running the tests
+run_tests()

@@ -1,0 +1,44 @@
+def var_subst(template, env):
+    # Helper function to extract variable and default value from a pattern
+    def extract_var_and_default(pattern):
+        # Splitting at ":-"; if not present, default_val will be None
+        parts = pattern.split(":-", 1)
+        var_name = parts[0]
+        default_val = parts[1] if len(parts) > 1 else None
+        return (var_name, default_val)
+    
+    start_idx = 0
+    result = ""
+    while start_idx < len(template):
+        # Find next "${"
+        open_idx = template.find("${", start_idx)
+        if open_idx == -1:
+            # If not found, append rest of template and break
+            result += template[start_idx:]
+            break
+        
+        # Append content before "${"
+        result += template[start_idx:open_idx]
+        
+        # Find closing "}"
+        close_idx = template.find("}", open_idx)
+        if close_idx == -1:
+            # Malformed pattern; append rest and break
+            result += template[open_idx:]
+            break
+        
+        # Extract content inside "${...}"
+        inner_content = template[open_idx + 2:close_idx]
+        var_name, default_val = extract_var_and_default(inner_content)
+        
+        # Use value from env if exists, otherwise use default value
+        value = env.get(var_name, default_val)
+        if value == None:
+            value = ""  # If var doesn't exist and no default is provided
+        
+        result += value
+        
+        # Move on to next segment
+        start_idx = close_idx + 1
+
+    return result
