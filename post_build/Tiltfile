@@ -1,6 +1,7 @@
-def post_build(name, resource, cmd):
+def post_build(name, resource, target_resource, labels=[]):
     local_resource(
         name,
+        labels=labels,
         serve_cmd="""
         #!/usr/bin/env bash
         set -Eeou pipefail
@@ -14,10 +15,10 @@ def post_build(name, resource, cmd):
 
             echo "Build UpToDate! Running post_build command"
 
-            {cmd}
+            tilt trigger "{target_resource}"
 
             tilt wait --timeout=-1s --for=condition=UpToDate=false uiresource/{resource}
             echo "Build not UpToDate..."
         done
-        """.format(resource=resource, cmd=cmd),
+        """.format(resource=resource, target_resource=target_resource),
     )
