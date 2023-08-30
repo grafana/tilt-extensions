@@ -8,8 +8,6 @@ load('ext://helm_remote', 'helm_remote')
 load('ext://secret', 'secret_from_dict')
 load('ext://local_output', 'local_output')
 
-if os.getenv("TMPDIR") == None:
-    os.putenv("TMPDIR", "/tmp")
 
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
 def grafana_dockerfile_contents(context_dir, configs, grafana_version):
@@ -50,6 +48,11 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
         
         plugin_dist_dir = plugin_dir + '/dist'
         plugin_src_dir = plugin_dir + '/src'
+
+        # Skip if the dist dir does not exist
+        if not os.path.exists(os.path.dirname(os.path.abspath(file)) + '/..' + '/dist'):
+            print("Skipping plugin %s because %s does not exist" % (plugin_id, plugin_dist_dir))
+            continue
 
         configs[plugin_id] = struct(plugin_id   = plugin_id,
                              plugin_dir         = plugin_dir,
@@ -140,7 +143,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
 
     # Write the values file as helm_remote wants the values file on disk
     # The os.path.realpath() is to work around https://github.com/tilt-dev/tilt/issues/6200
-    rendered_values = os.path.realpath(os.path.dirname(os.getenv("TMPDIR"))) + '/rendered-grafana-values.yaml'
+    rendered_values = os.path.realpath(os.path.dirname(os.getenv("TMPDIR", "/tmp/"))) + '/rendered-grafana-values.yaml'
     # Trick to write to a local file from a string
     # https://github.com/tilt-dev/tilt/issues/4827
     local('cat > %s' % rendered_values,
