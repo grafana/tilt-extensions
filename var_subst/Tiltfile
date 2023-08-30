@@ -32,7 +32,7 @@ def var_subst(template, env):
         var_name, default_val = extract_var_and_default(inner_content)
         
         # Use value from env if exists, otherwise use default value
-        value = env.get(var_name, default_val)
+        value = os.environ.get(var_name, default_val)
         if value == None:
             value = ""  # If var doesn't exist and no default is provided
         
