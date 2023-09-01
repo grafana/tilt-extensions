@@ -44,6 +44,7 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
     for file in plugin_json_files:
         plugin_config = read_json(file)
         plugin_id = plugin_config['id']
+        plugin_executable = plugin_config.get('executable', plugin_id)
         plugin_dir = os.path.relpath(os.path.dirname(os.path.abspath(file)) + '/..', base_path)
         
         plugin_dist_dir = plugin_dir + '/dist'
@@ -55,12 +56,13 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
             continue
 
         configs[plugin_id] = struct(plugin_id   = plugin_id,
+                             executable         = plugin_executable,
                              plugin_dir         = plugin_dir,
                              plugin_dist_dir    = plugin_dist_dir,
                              plugin_src_dir     = plugin_src_dir,
                              grafana_plugin_dir = "/var/lib/grafana/plugins/%s" % plugin_id,
-                             restart_command    = run_func('pkill {plugin_id} || /bin/true'.format(plugin_id=plugin_id), 
-                                                            trigger = ['{plugin_dist_dir}/{plugin_id}*'.format(plugin_dist_dir=plugin_dist_dir, plugin_id=plugin_id)]))
+                             restart_command    = run_func('pkill {plugin_executable} || /bin/true'.format(plugin_executable=plugin_executable), 
+                                                            trigger = ['{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)]))
     return configs
 
 
