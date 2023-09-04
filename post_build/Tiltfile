@@ -2,23 +2,5 @@ def post_build(name, resource, target_resource, labels=[]):
     local_resource(
         name,
         labels=labels,
-        serve_cmd="""
-        #!/usr/bin/env bash
-        set -Eeou pipefail
-
-        echo "Starting post build"
-
-        while :
-        do
-            # timeout -1s means a week
-            tilt wait --timeout=-1s --for=condition=UpToDate=true uiresource/{resource}
-
-            echo "Build UpToDate! Running post_build command"
-
-            tilt trigger "{target_resource}"
-
-            tilt wait --timeout=-1s --for=condition=UpToDate=false uiresource/{resource}
-            echo "Build not UpToDate..."
-        done
-        """.format(resource=resource, target_resource=target_resource),
-    )
+        serve_cmd=["post_build.sh", resource, target_resource],
+    )                
