@@ -2,5 +2,5 @@ def post_build(name, resource, target_resource, labels=[]):
     local_resource(
         name,
         labels=labels,
-        serve_cmd=["post_build.sh", resource, target_resource],
+        serve_cmd=["./post_build.sh", resource, target_resource],
     )                
