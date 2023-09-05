@@ -3,7 +3,7 @@ set -Eeou pipefail
 
 echo "Starting post build"
 
-if [ $# -neq 2 ]; then
+if [ "$#" -ne 2 ]; then
 		echo "Usage: post_build.sh <resource> <target_resource>"
 		exit 1
 fi

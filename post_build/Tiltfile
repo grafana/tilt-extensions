@@ -1,6 +1,9 @@
+# Get the directory of this Tiltfile, which is where the script is
+script_dir = os.getcwd()
+
 def post_build(name, resource, target_resource, labels=[]):
     local_resource(
         name,
         labels=labels,
-        serve_cmd=["./post_build.sh", resource, target_resource],
+        serve_cmd=["%s/post_build.sh" % script_dir, resource, target_resource],
     )                
