@@ -4,7 +4,7 @@
 # The strategy is to generate the Dockerfile for the parent Grafana instance, and
 # then use the Helm Chart to deploy it.
 load('ext://configmap', 'configmap_create')
-load('ext://helm_remote', 'helm_remote')
+load('ext://helm_resource', 'helm_repo', 'helm_resource')
 load('ext://secret', 'secret_from_dict')
 load('ext://local_output', 'local_output')
 
@@ -153,14 +153,24 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
           echo_off=True,
           quiet=True)
 
+    helm_repo(
+        'grafana',
+        'https://grafana.github.io/helm-charts',
+        labels=['Grafana'],
+        resource_name='helm-repo-grafana',
+    )
+
     # Deploy the chart
-    helm_remote('grafana',
-                repo_name='grafana',
-                repo_url='https://grafana.github.io/helm-charts',
-                namespace=namespace,
-                create_namespace=True,
-                values=[rendered_values])
+    helm_resource(
+        'grafana',
+        'grafana/grafana',
+        namespace=namespace,
+        image_deps=[image_repository + ':' + image_tag],
+        image_keys=[('image.registry', 'image.repository', 'image.tag')],
+        flags=['--create-namespace', '--values=%s' % rendered_values],
+        labels=['Grafana'],
+        resource_deps=deps,
+        port_forwards=[3000],
+    )
     # Tell Tilt to not watch the values file
     watch_settings(ignore=rendered_values)
-                
-    k8s_resource('grafana', port_forwards=3000, labels=['Grafana'], resource_deps=deps)
