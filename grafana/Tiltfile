@@ -60,10 +60,16 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
                              plugin_dir         = plugin_dir,
                              plugin_dist_dir    = plugin_dist_dir,
                              plugin_src_dir     = plugin_src_dir,
+                             enable_tracing     = plugin_config.get('tracing', False) == True,
                              grafana_plugin_dir = "/var/lib/grafana/plugins/%s" % plugin_id,
                              restart_command    = run_func('pkill {plugin_executable} || /bin/true'.format(plugin_executable=plugin_executable), 
                                                             trigger = ['{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)]))
     return configs
+
+def get_or_create(dict, key):
+    if key not in dict:
+        dict[key] = {}
+    return dict[key]
 
 
 def grafana(context, plugin_files, grafana_version='latest', namespace='grafana', deps=[], extra_env={}):
@@ -141,6 +147,13 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
             'configMap': '%s-provisioning' % plugin_id,
             'readOnly' : 'true'
         })
+
+        # Tell the chart to enable tracing if the plugin wants it
+        if plugin.enable_tracing:
+          grafana_ini = chart_values['grafana.ini']
+          plugin_values = get_or_create(grafana_ini, 'plugin.%s' % plugin_id)
+          plugin_values['tracing'] = True
+
     chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
 
     # Write the values file as helm_remote wants the values file on disk
