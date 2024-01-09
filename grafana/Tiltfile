@@ -10,10 +10,10 @@ load('ext://local_output', 'local_output')
 
 
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
-def grafana_dockerfile_contents(context_dir, configs, grafana_version):
+def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_version):
     dockerfile="""
-    FROM grafana/grafana:%s
-    """ % grafana_version
+    FROM %s:latest
+    """ % grafana_image
 
     for repo, config in configs.items():
         # TODO the pathing is wonky
@@ -102,7 +102,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     # TODO: Make this configurable
     image_tag = 'ops-devenv'
     docker_build("%s:%s" % (image_repository, image_tag), 
-                dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_version),
+                dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
                 context             = context,
                 only                = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
                                       for (_, config) in plugins.items()],
@@ -177,7 +177,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     # Deploy the chart
     helm_resource(
         'grafana',
-        image=image_respository,
+        'grafana/grafana',
         namespace=namespace,
         image_deps=[image_repository + ':' + image_tag],
         image_keys=[('image.registry', 'image.repository', 'image.tag')],
