@@ -72,12 +72,13 @@ def get_or_create(dict, key):
     return dict[key]
 
 
-def grafana(context, plugin_files, grafana_version='latest', namespace='grafana', deps=[], extra_env={}):
+def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
     Args:
         context        : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
         plugin_files   : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
+        grafana_image  : The grafana image you want to use (i.e. grafana/grafana-enterprise). Defaults to 'grafana/grafana'
         grafana_version: The image tag for the version of grafana you want to use. Defaults to 'latest'
         namespace      : The Kubernetes namespace to deploy to. Defaults to 'default'
         deps           : A list of Tilt resources Grafana should wait for
@@ -96,11 +97,11 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
 
     plugins = load_plugins(os.path.abspath(context), plugin_json_files)
     
-    # This is the docker image we are about to build
-    image_repository = "grafana/grafana"
+    # This is the Grafana docker image we are about to build
+    image_repository = grafana_image
     # TODO: Make this configurable
     image_tag = 'ops-devenv'
-    docker_build("%s:%s" % (image_repository, image_tag),
+    docker_build("%s:%s" % (image_repository, image_tag), 
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_version),
                 context             = context,
                 only                = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
@@ -130,7 +131,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     chart_values['env'].update(extra_env)
 
     chart_values['image'] = {}
-    chart_values['image']['repository'] = image_repository
+    chart_values['image']['repository'] = image_repository 
     chart_values['image']['tag'] = image_tag
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
@@ -176,7 +177,7 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     # Deploy the chart
     helm_resource(
         'grafana',
-        'grafana/grafana',
+        image=image_respository,
         namespace=namespace,
         image_deps=[image_repository + ':' + image_tag],
         image_keys=[('image.registry', 'image.repository', 'image.tag')],
