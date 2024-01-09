@@ -131,7 +131,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     chart_values['env'].update(extra_env)
 
     chart_values['image'] = {}
-    chart_values['image']['repository'] = image_repository 
+    chart_values['image']['repository'] = image_repository
     chart_values['image']['tag'] = image_tag
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
