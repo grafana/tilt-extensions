@@ -12,8 +12,8 @@ load('ext://local_output', 'local_output')
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
 def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_version):
     dockerfile="""
-    FROM %s:latest
-    """ % grafana_image
+    FROM %s:%s
+    """ % (grafana_image, grafana_version)
 
     for repo, config in configs.items():
         # TODO the pathing is wonky
