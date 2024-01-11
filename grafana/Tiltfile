@@ -115,6 +115,8 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     k8s_yaml(secret_from_dict(name = 'grafana-admin-creds', 
                               namespace = namespace, 
                               inputs = {'admin-user': 'admin', 'admin-password':'admin'}))
+		# HACK: Add this value to allow unencrypted credentials. This is not recommended for production, and should be removed once we properly support variable expansion in this PR.
+		chart_values['assertNoLeakedSecrets'] = 'false'
     chart_values['admin'] = {}
     chart_values['admin']['existingSecret'] = 'grafana-admin-creds'
 
