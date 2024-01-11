@@ -102,7 +102,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     image_repository = grafana_image
     # TODO: Make this configurable
     image_tag = 'ops-devenv'
-    docker_build("%s:%s" % (image_repository, image_tag), 
+    docker_build("%s:%s" % (image_repository, image_tag),
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
                 context             = context,
                 only                = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
@@ -138,7 +138,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     chart_values['image']['repository'] = image_repository
     chart_values['image']['tag'] = image_tag
 
-    # Sets the Grafana Enterprise License
+    # Sets the Grafana Enterprise License Text
     chart_values['grafana.ini']['enterprise'] = {}
     chart_values['grafana.ini']['enterprise']['license_text'] = license
 
