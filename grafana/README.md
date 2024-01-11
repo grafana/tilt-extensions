@@ -17,6 +17,7 @@ grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version=
         grafana_image  : The grafana image you want to use (i.e. grafana/grafana-enterprise). Defaults to 'grafana/grafana'
         grafana_version: The image tag for the version of grafana you want to use. Defaults to 'latest'
         namespace      : The Kubernetes namespace to deploy to. Defaults to 'default'
+        license        : The Grafana license key
         deps           : A list of Tilt resources Grafana should wait for
         extra_env      : A dict of env vars to pass to Grafana
 
