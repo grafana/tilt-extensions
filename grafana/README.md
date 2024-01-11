@@ -14,7 +14,7 @@ grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version=
     Args:
         context        : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
         plugin_files   : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
-        grafana_image  : The grafana image you want to use (i.e. grafana/grafana-enterprise). Defaults to 'grafana/grafana'
+        grafana_image  : The grafana image you want to use. Defaults to 'grafana/grafana'
         grafana_version: The image tag for the version of grafana you want to use. Defaults to 'latest'
         namespace      : The Kubernetes namespace to deploy to. Defaults to 'default'
         license        : The Grafana license key
