@@ -138,9 +138,10 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     chart_values['image']['repository'] = image_repository
     chart_values['image']['tag'] = image_tag
 
-    # Sets the Grafana Enterprise License Text
+    # Sets the Grafana Enterprise License Text and enables the accessControlOnCall feature flag
     chart_values['grafana.ini']['enterprise'] = {}
     chart_values['grafana.ini']['enterprise']['license_text'] = license
+    chart_values['grafana.ini']['feature_toggles']['enable'] = 'accessControlOnCall'
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
     # with the name <plugin_id>-provisioning
