@@ -16,7 +16,7 @@ grafana.ini:
     enabled: true
     org_role: Admin
   feature_toggles:
-    enable: topnav
+    enable: topnav, accessControlOnCall
   log:
     level: info
   log.frontend:
