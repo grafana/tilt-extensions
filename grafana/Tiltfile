@@ -10,10 +10,10 @@ load('ext://local_output', 'local_output')
 
 
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
-def grafana_dockerfile_contents(context_dir, configs, grafana_version):
+def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_version):
     dockerfile="""
-    FROM grafana/grafana:%s
-    """ % grafana_version
+    FROM %s:%s
+    """ % (grafana_image, grafana_version)
 
     for repo, config in configs.items():
         # TODO the pathing is wonky
@@ -71,17 +71,27 @@ def get_or_create(dict, key):
         dict[key] = {}
     return dict[key]
 
+def update_grafana_ini(grafana_ini, extra_dict):
+    for k, v in extra_dict.items():
+        if type(v) == type({}):
+            grafana_ini[k] = update_grafana_ini(grafana_ini.get(k, {}), v)
+        else:
+            grafana_ini[k] = v
+    return grafana_ini
 
-def grafana(context, plugin_files, grafana_version='latest', namespace='grafana', deps=[], extra_env={}):
+
+def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}, extra_grafana_ini={}):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
     Args:
-        context        : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
-        plugin_files   : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
-        grafana_version: The image tag for the version of grafana you want to use. Defaults to 'latest'
-        namespace      : The Kubernetes namespace to deploy to. Defaults to 'default'
-        deps           : A list of Tilt resources Grafana should wait for
-        extra_env      : A dict of env vars to pass to Grafana
+        context          : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
+        plugin_files     : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
+        grafana_image    : The grafana image you want to use. Defaults to 'grafana/grafana'
+        grafana_version  : The image tag for the version of grafana you want to use. Defaults to 'latest'
+        namespace        : The Kubernetes namespace to deploy to. Defaults to 'default'
+        deps             : A list of Tilt resources Grafana should wait for
+        extra_env        : A dict of env vars to pass to Grafana
+        extra_grafana_ini: A dict of key value pairs to configure the grafana.ini file
 
     Returns:
       Nothing
@@ -96,12 +106,12 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
 
     plugins = load_plugins(os.path.abspath(context), plugin_json_files)
     
-    # This is the docker image we are about to build
-    image_repository = "grafana/grafana"
+    # This is the Grafana docker image we are about to build
+    image_repository = grafana_image
     # TODO: Make this configurable
     image_tag = 'ops-devenv'
     docker_build("%s:%s" % (image_repository, image_tag),
-                dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_version),
+                dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
                 context             = context,
                 only                = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
                                       for (_, config) in plugins.items()],
@@ -135,6 +145,12 @@ def grafana(context, plugin_files, grafana_version='latest', namespace='grafana'
     chart_values['image'] = {}
     chart_values['image']['repository'] = image_repository
     chart_values['image']['tag'] = image_tag
+
+    # Sets the passed in additional Grafana_init fields
+    if len(extra_grafana_ini) > 0:
+        grafana_ini = chart_values["grafana.ini"] 
+        addtnl_grafana_ini = update_grafana_ini(grafana_ini, extra_grafana_ini)
+        chart_values["grafana.ini"].update(addtnl_grafana_ini)
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
     # with the name <plugin_id>-provisioning
