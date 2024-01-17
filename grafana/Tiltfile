@@ -71,15 +71,6 @@ def get_or_create(dict, key):
         dict[key] = {}
     return dict[key]
 
-def update_grafana_ini(grafana_ini, extra_dict):
-    for k, v in extra_dict.items():
-        if type(v) == type({}):
-            grafana_ini[k] = update_grafana_ini(grafana_ini.get(k, {}), v)
-        else:
-            grafana_ini[k] = v
-    return grafana_ini
-
-
 def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}, extra_grafana_ini={}):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
@@ -148,9 +139,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
 
     # Sets the passed in additional Grafana_init fields
     if len(extra_grafana_ini) > 0:
-        grafana_ini = chart_values["grafana.ini"] 
-        addtnl_grafana_ini = update_grafana_ini(grafana_ini, extra_grafana_ini)
-        chart_values["grafana.ini"].update(addtnl_grafana_ini)
+        chart_values["grafana.ini"].update(extra_grafana_ini)
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
     # with the name <plugin_id>-provisioning

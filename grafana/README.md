@@ -8,7 +8,7 @@ Default Grafana helm values are in `grafana-values.yaml`.
 
 Usage is:
 ```
-grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', license='', deps=[], extra_env={}):
+grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}, extra_grafana_ini={}):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
     Args:
