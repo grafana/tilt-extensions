@@ -50,11 +50,6 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
         plugin_dist_dir = plugin_dir + '/dist'
         plugin_src_dir = plugin_dir + '/src'
 
-        # Skip if the dist dir does not exist
-        if not os.path.exists(os.path.dirname(os.path.abspath(file)) + '/..' + '/dist'):
-            warn("Skipping plugin %s because %s does not exist" % (plugin_id, plugin_dist_dir))
-            continue
-
         configs[plugin_id] = struct(plugin_id   = plugin_id,
                              executable         = plugin_executable,
                              plugin_dir         = plugin_dir,
