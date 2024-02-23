@@ -16,7 +16,7 @@ admin:
   existingSecret: grafana-admin-creds
 serviceAccount:
   # Broken by Helm chart version 7.3.2. Prefer to set this explicitly rather than depend on default behavior.
-  automountServiceAccountToken: true
+  autoMount: true
   create: default
 service:
   port: 3000
