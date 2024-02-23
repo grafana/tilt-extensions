@@ -112,18 +112,6 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
                               namespace = namespace, 
                               inputs = {'admin-user': 'admin', 'admin-password':'admin'}))
 
-    # HACK: Add this value to allow unencrypted credentials. This is not recommended for production, and should be removed once we properly support variable expansion in this PR.
-    chart_values['assertNoLeakedSecrets'] = 'false'
-    chart_values['admin'] = {}
-    chart_values['admin']['existingSecret'] = 'grafana-admin-creds'
-
-    chart_values['serviceAccount'] = {}
-    chart_values['serviceAccount']['create'] = 'default'
-
-    chart_values['service'] = {}
-    chart_values['service']['port'] = '3000'
-    chart_values['service']['nodePort'] = '3000'
-
     # Set the env vars
     chart_values['env'] = {}
     chart_values['env'].update(extra_env)

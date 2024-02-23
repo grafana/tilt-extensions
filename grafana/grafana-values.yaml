@@ -8,6 +8,22 @@ persistence:
 sidecar:
   datasources:
     enabled: true
+
+# HACK: Add this value to allow unencrypted credentials. This is not recommended for production, and should be removed once we properly support variable expansion in this PR.
+assertNoLeakedSecrets: false
+
+admin:
+  existingSecret: grafana-admin-creds
+serviceAccount:
+  # Broken by Helm chart version 7.3.2. Prefer to set this explicitly rather than depend on default behavior.
+  automountServiceAccountToken: true
+  create: default
+service:
+  port: 3000
+  nodePort: 3000
+
+
+
 grafana.ini:
   app_mode: development
   analytics:
