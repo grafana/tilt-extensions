@@ -16,15 +16,23 @@ def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_ver
     """ % (grafana_image, grafana_version)
 
     for repo, config in configs.items():
+        if repo.startswith("grafana"):
+            continue
+        # Copy the plugin binaries into a tmp dir to be extracted into /var/lib/grafana later
         # TODO the pathing is wonky
         dockerfile += "COPY --chown=grafana:root %s /tmp/plugins/%s\n" % (os.path.relpath(os.path.abspath(context_dir + '/' + config.plugin_dist_dir), os.path.abspath(context_dir)), config.plugin_id)
 
+    # The chmods below are for the live updates to work correctly for grafana local dev
     dockerfile += """
+    USER root
+    RUN chmod 777 /usr/share/grafana/bin
+    RUN chmod -R 777 /usr/share/grafana/public
+    USER grafana
     # The Grafana Helm Chart puts a volume mount over /var/lib/grafana, so we cannot 
     # copy files there. This is a hack. We might be able to entrypoint around this
     RUN echo "#!/bin/sh" > /tmp/install-and-run.sh && \
         echo "/bin/tar cf - plugins -C /tmp | (cd /var/lib/grafana; tar xfv -)" >> /tmp/install-and-run.sh && \
-        echo "/run.sh $*" >> /tmp/install-and-run.sh
+        echo "while true; do echo 'running /run.sh'; /run.sh $*; sleep 1; done" >> /tmp/install-and-run.sh
     RUN chmod +x /tmp/install-and-run.sh
     ENTRYPOINT [ "/tmp/install-and-run.sh" ]
     """
@@ -61,12 +69,37 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
                                                             trigger = ['{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)]))
     return configs
 
+def add_local_grafana_dev(configs, run_func=run):
+
+    # this is forcing the grafana config for live_updates into the same pattern 
+    # as a plugin. Not idea, but works for now
+    configs["grafana"] = struct(plugin_id = "",
+                                executable = "grafana",
+                                plugin_dir = "grafana",
+                                plugin_dist_dir = "grafana/bin",
+                                plugin_src_dir = "",
+                                enable_tracing = False,
+                                grafana_plugin_dir = "/usr/share/grafana/bin",
+                                restart_command    = run_func('pkill grafana || /bin/true', 
+                                                            trigger = ['../grafana/bin/grafana']))
+    configs["grafana_frontend"] = struct(plugin_id = "",
+                                executable = "",
+                                plugin_dir = "grafana",
+                                plugin_dist_dir = "grafana/public",
+                                plugin_src_dir = "",
+                                enable_tracing = False,
+                                grafana_plugin_dir = "/usr/share/grafana/public",
+                                restart_command    = run_func('/bin/true', trigger = []))
+
+    return configs
+
 def get_or_create(dict, key):
     if key not in dict:
         dict[key] = {}
     return dict[key]
 
-def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}, extra_grafana_ini={}):
+def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana',
+            deps=[], extra_env={}, extra_grafana_ini={}, local_grafana_dev=False):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
     Args:
@@ -78,6 +111,7 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
         deps             : A list of Tilt resources Grafana should wait for
         extra_env        : A dict of env vars to pass to Grafana
         extra_grafana_ini: A dict of key value pairs to configure the grafana.ini file
+        local_grafana_dev: Bool - are you doing local grafana develpoment? Defaults to False
 
     Returns:
       Nothing
@@ -91,6 +125,10 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
         plugin_json_files.append(plugin_files)
 
     plugins = load_plugins(os.path.abspath(context), plugin_json_files)
+
+    # Setup for local grafana dev, if requested
+    if local_grafana_dev:
+        plugins = add_local_grafana_dev(plugins)
     
     # This is the Grafana docker image we are about to build
     image_repository = grafana_image
@@ -124,10 +162,15 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
     if len(extra_grafana_ini) > 0:
         chart_values["grafana.ini"].update(extra_grafana_ini)
 
+    print(plugins)
+
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
     # with the name <plugin_id>-provisioning
     extraConfigmapsMounts = []
-    for (_, plugin) in plugins.items():
+    for (repo, plugin) in plugins.items():
+        # if repo starts with "grafana"
+        if repo.startswith("grafana"):
+            continue
         plugin_id = plugin.plugin_id
 
         # Tell the chart to mount it
