@@ -1,9 +1,11 @@
-plugin:
-  name:
-  pnpm_run_command: dev
+plugin_name:
 
-image:
-  repository: localhost:63628/irm/plugins
-  tag: dev
-
-env: {}
+ui:
+  image:
+    repository:
+    tag:
+  args: []
+  securityContext: {}
+  env: {}
+  volumeMounts: []
+  volumes: []
