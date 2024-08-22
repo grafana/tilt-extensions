@@ -1,0 +1,3 @@
+plugin:
+  name: oncall
+  pnpm_run_command: watch

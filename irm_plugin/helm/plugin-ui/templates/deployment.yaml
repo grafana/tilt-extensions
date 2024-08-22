@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.plugin.name }}-ui
+  labels:
+    app.kubernetes.io/component: {{ .Values.plugin.name }}-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: {{ .Values.plugin.name }}-ui
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: {{ .Values.plugin.name }}-ui
+    spec:
+      containers:
+        - name: {{ .Values.plugin.name }}-ui
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: Always
+          args:
+            # NOTE: I believe the extra double quotes below are necessary to ensure the command is passed into
+            # concurrently (the Dockerfile ENTRYPOINT) as a single string (escaping the quotes is necessary because
+            # of the 2x double-quote usage)
+            # # TODO: pnpm run mage:watch isn't a command?
+            - "\"pnpm --filter grafana-{{ .Values.plugin.name }}-app run mage:watch\""
+            - "\"pnpm --filter grafana-{{ .Values.plugin.name }}-app run {{ .Values.plugin.pnpm_run_command }}\""
+          securityContext:
+            # run as root.. not ideal but otherwise ran into issues..
+            # alternative is to do something like oncall does in its backend docker image, defining an appuser in the dockerfile:
+            # https://github.com/grafana/oncall/blob/87dd5c662363a47abcba1a21197782d887cee3ec/engine/Dockerfile#L4-L7
+            #
+            # however the chown command:
+            # https://github.com/grafana/oncall/blob/87dd5c662363a47abcba1a21197782d887cee3ec/engine/Dockerfile#L45-L46
+            #
+            # takes ~3mins locally to run.. seems unnecessary for local development to worry about this
+            allowPrivilegeEscalation: false
+            runAsUser: 0
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: "{{ $value }}"
+            {{- end }}
+          volumeMounts:
+            - mountPath: /etc/app
+              name: hot-reloaded-plugin
+      volumes:
+        - name: hot-reloaded-plugin
+          hostPath:
+            # see dev/kind-config.yaml for how this host path is mounted onto the kind cluster
+            path: /plugins/grafana-{{ .Values.plugin.name }}-app

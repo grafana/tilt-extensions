@@ -1,0 +1,9 @@
+plugin:
+  name:
+  pnpm_run_command: dev
+
+image:
+  repository: localhost:63628/irm/plugins
+  tag: dev
+
+env: {}

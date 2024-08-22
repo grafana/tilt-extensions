@@ -1,0 +1,52 @@
+def create_irm_plugin_ui_k8s_resources(plugin_name, k8s_namespace="default"):
+    """TODO: add docstring here
+
+    Args:
+        plugin_name      : TODO:
+        namespace        : The Kubernetes namespace to deploy to. Defaults to 'default'
+        deps             : A list of Tilt resources Grafana should wait for
+    Returns:
+      Nothing
+    """
+
+    plugin_ui_resource_name = "%s-ui" % plugin_name
+    plugin_ui_labels = ["%s.Plugin" % plugin_name.capitalize()]
+
+    # This bit will create a UI container for the plugin
+    # The main responsibility of this is to hot-reload/rebuild the plugin on code changes
+    helm_rendered_yaml = helm(
+        "helm/plugin-ui",
+        name=plugin_ui_resource_name,
+        values="./helm/%s.yaml" % plugin_name,
+        namespace=k8s_namespace,
+    )
+    k8s_yaml(helm_rendered_yaml)
+    k8s_resource(workload=plugin_ui_resource_name, labels=plugin_ui_labels)
+
+    # This bit will simply restart the go subprocess running the plugin's backend portion
+    # (inside of the grafana container), on code changes
+    local_resource(
+        "restart-%s-plugin-backend" % plugin_name,
+        labels=plugin_ui_labels,
+        dir="./",
+        cmd="./restart_backend_plugin.sh",
+        resource_deps=["grafana", plugin_ui_resource_name],
+        # TODO: what to do here? how to have this relative to the plugin dir?
+        # deps=["./packages/grafana-%s-plugin/pkg/plugin" % plugin_name]
+    )
+
+    configmap_resource_name = "grafana-%s-app-provisioning" % plugin_name
+
+    # TODO: move the configmap stuff to the helm chart
+    configmap_create(
+        configmap_resource_name,
+        namespace=k8s_namespace,
+        from_file="./dev/%s.yaml" % configmap_resource_name,
+    )
+
+    k8s_resource(
+        objects=["%s:configmap" % configmap_resource_name],
+        new_name="%s-configmap" % configmap_resource_name,
+        resource_deps=[plugin_ui_resource_name],
+        labels=["Grafana"],
+    )
