@@ -159,7 +159,8 @@ def grafana(
     chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
 
     # allow consumer of this tilt plugin to specify whatever additional helm values they'd like
-    chart_values.extend(additional_grafana_helm_chart_values_file)
+    if additional_grafana_helm_chart_values_file:
+        chart_values.update(read_yaml(additional_grafana_helm_chart_values_file))
 
     # Write the values file as helm_remote wants the values file on disk
     # The os.path.realpath() is to work around https://github.com/tilt-dev/tilt/issues/6200
