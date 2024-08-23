@@ -66,18 +66,29 @@ def get_or_create(dict, key):
         dict[key] = {}
     return dict[key]
 
-def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_version='latest', namespace='grafana', deps=[], extra_env={}, extra_grafana_ini={}):
+def grafana(
+    context,
+    plugin_files,
+    grafana_image='grafana/grafana',
+    grafana_version='latest',
+    namespace='grafana',
+    deps=[],
+    extra_env={},
+    extra_grafana_ini={},
+    additional_grafana_helm_chart_values_file=None,
+):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
     Args:
-        context          : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
-        plugin_files     : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
-        grafana_image    : The grafana image you want to use. Defaults to 'grafana/grafana'
-        grafana_version  : The image tag for the version of grafana you want to use. Defaults to 'latest'
-        namespace        : The Kubernetes namespace to deploy to. Defaults to 'default'
-        deps             : A list of Tilt resources Grafana should wait for
-        extra_env        : A dict of env vars to pass to Grafana
-        extra_grafana_ini: A dict of key value pairs to configure the grafana.ini file
+        context                                   : The Docker context directory that is the root of the Dockerfile. Typically the 'plugin' directory
+        plugin_files                              : A path, or list of paths to the 'plugin.json' file for the plugin(s) you are running
+        grafana_image                             : The grafana image you want to use. Defaults to 'grafana/grafana'
+        grafana_version                           : The image tag for the version of grafana you want to use. Defaults to 'latest'
+        namespace                                 : The Kubernetes namespace to deploy to. Defaults to 'default'
+        deps                                      : A list of Tilt resources Grafana should wait for
+        extra_env                                 : A dict of env vars to pass to Grafana
+        extra_grafana_ini                         : A dict of key value pairs to configure the grafana.ini file
+        additional_grafana_helm_chart_values_file : Absolute path to a .yaml file which will be passed as an additional values file to the Grafana helm chart
 
     Returns:
       Nothing
@@ -146,6 +157,9 @@ def grafana(context, plugin_files, grafana_image='grafana/grafana', grafana_vers
           plugin_values['tracing'] = True
 
     chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
+
+    # allow consumer of this tilt plugin to specify whatever additional helm values they'd like
+    chart_values.extend(additional_grafana_helm_chart_values_file)
 
     # Write the values file as helm_remote wants the values file on disk
     # The os.path.realpath() is to work around https://github.com/tilt-dev/tilt/issues/6200

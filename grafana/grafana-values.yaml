@@ -1,8 +1,6 @@
 image:
-  repository:
-    grafana/grafana
-  tag:
-    ops-plugins
+  repository: grafana/grafana
+  tag: ops-plugins
 persistence:
   enabled: false
 sidecar:
@@ -21,8 +19,6 @@ serviceAccount:
 service:
   port: 3000
   nodePort: 3000
-
-
 
 grafana.ini:
   app_mode: development
