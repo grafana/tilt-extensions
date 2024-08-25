@@ -160,7 +160,14 @@ def grafana(
 
     # allow consumer of this tilt plugin to specify whatever additional helm values they'd like
     if additional_grafana_helm_chart_values_file:
-        chart_values.update(read_yaml(additional_grafana_helm_chart_values_file))
+        print("additional_grafana_helm_chart_values_file specified, reading vaules yaml file")
+
+        values_file_contents = read_yaml(additional_grafana_helm_chart_values_file, default={})
+        if values_file_contents:
+            print("succesfully read values file %s" % additional_grafana_helm_chart_values_file)
+            chart_values.update(values_file_contents)
+        else:
+            print("values file %s" % additional_grafana_helm_chart_values_file, "is empty, skipping")
 
     # Write the values file as helm_remote wants the values file on disk
     # The os.path.realpath() is to work around https://github.com/tilt-dev/tilt/issues/6200
