@@ -107,16 +107,25 @@ def grafana(
     image_repository = grafana_image
     # TODO: Make this configurable
     image_tag = 'ops-devenv'
+
+    default_grafana_values = os.path.dirname(__file__) + '/grafana-values.yaml'
+    # To trigger a rebuild/reload of Grafana, pickup the artifacts of the plugin builds (plugin/dist)
+    watched_files = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
+                    for (_, config) in plugins.items()]
+    # If the 'only' param below is empty, which is the case for AppPlatform repos, 
+    # Tilt will rebuild grafana for any changes in 'context',
+    # which will be anything in the parent directory of this repo. To ensusure that the 'only' 
+    # param is not empty add the default values file which should probably trigger a rebuild anyway.
+    watched_files.append(default_grafana_values)
+    
     docker_build("%s:%s" % (image_repository, image_tag),
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
                 context             = context,
-                only                = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
-                                      for (_, config) in plugins.items()],
-                live_update = live_updates(context, plugins))
-
+                only                = watched_files,
+                live_update         = live_updates(context, plugins))
 
     # Load the default grafana values from this directory
-    chart_values = read_yaml(os.path.dirname(__file__) + '/grafana-values.yaml')
+    chart_values = read_yaml(default_grafana_values)
 
     # Create admin/admin secret for the Helm Chart
     k8s_yaml(secret_from_dict(name = 'grafana-admin-creds', 
