@@ -76,6 +76,7 @@ def grafana(
     extra_env={},
     extra_grafana_ini={},
     additional_grafana_helm_chart_values_file=None,
+    extra_configmaps_mounts=[],
 ):
     """Deploys one or more plugin(s) in Grafana using the Helm Chart.
 
@@ -89,6 +90,7 @@ def grafana(
         extra_env                                 : A dict of env vars to pass to Grafana
         extra_grafana_ini                         : A dict of key value pairs to configure the grafana.ini file
         additional_grafana_helm_chart_values_file : Absolute path to a .yaml file which will be passed as an additional values file to the Grafana helm chart
+        extra_configmaps_mounts                 : A list of dicts of configmap mounts to add to the Grafana helm chart
 
     Returns:
       Nothing
@@ -117,6 +119,8 @@ def grafana(
     # which will be anything in the parent directory of this repo. To ensusure that the 'only' 
     # param is not empty add the default values file which should probably trigger a rebuild anyway.
     watched_files.append(default_grafana_values)
+
+    print("context: %s" % context)
     
     docker_build("%s:%s" % (image_repository, image_tag),
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
@@ -145,27 +149,33 @@ def grafana(
         chart_values["grafana.ini"].update(extra_grafana_ini)
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
-    # with the name <plugin_id>-provisioning
-    extraConfigmapsMounts = []
+    # with the name <plugin_id>-provisioning. If they don't, then we need to add them here.
+    if len(extra_configmaps_mounts) == 0:
+        extra_mounts = []
+        extra_mounts.extend(extra_configmaps_mounts)
+        for (_, plugin) in plugins.items():
+            plugin_id = plugin.plugin_id
+            # Tell the chart to mount it
+            extra_configmaps_mounts.append({
+                'name'     : '%s-provisioning' % plugin_id,
+                'mountPath': '/etc/grafana/provisioning/plugins/%s-provisioning.yaml' % plugin_id,
+                'subPath'  : '%s-provisioning.yaml' % plugin_id,
+                'configMap': '%s-provisioning' % plugin_id,
+                'readOnly' : 'true'
+            })
+        chart_values['extraConfigmapMounts'] = extra_mounts
+    else:
+        chart_values['extraConfigmapMounts'] = extra_configmaps_mounts
+
+    # Setup tracing for plugins that want it
     for (_, plugin) in plugins.items():
         plugin_id = plugin.plugin_id
-
-        # Tell the chart to mount it
-        extraConfigmapsMounts.append({
-            'name'     : '%s-provisioning' % plugin_id,
-            'mountPath': '/etc/grafana/provisioning/plugins/%s-provisioning.yaml' % plugin_id,
-            'subPath'  : '%s-provisioning.yaml' % plugin_id,
-            'configMap': '%s-provisioning' % plugin_id,
-            'readOnly' : 'true'
-        })
-
         # Tell the chart to enable tracing if the plugin wants it
         if plugin.enable_tracing:
           grafana_ini = chart_values['grafana.ini']
           plugin_values = get_or_create(grafana_ini, 'plugin.%s' % plugin_id)
           plugin_values['tracing'] = True
 
-    chart_values['extraConfigmapMounts'] = extraConfigmapsMounts
 
     # allow consumer of this tilt plugin to specify whatever additional helm values they'd like
     if additional_grafana_helm_chart_values_file:
