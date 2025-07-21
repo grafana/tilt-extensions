@@ -156,7 +156,7 @@ def grafana(
         for (_, plugin) in plugins.items():
             plugin_id = plugin.plugin_id
             # Tell the chart to mount it
-            extra_configmaps_mounts.append({
+            extra_mounts.append({
                 'name'     : '%s-provisioning' % plugin_id,
                 'mountPath': '/etc/grafana/provisioning/plugins/%s-provisioning.yaml' % plugin_id,
                 'subPath'  : '%s-provisioning.yaml' % plugin_id,
