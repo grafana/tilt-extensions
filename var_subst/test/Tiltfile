@@ -38,12 +38,54 @@ def test_substitute_with_malformed_pattern():
     result = var_subst(template, env)
     assert_equals(result, "Hello, ${FOO!")
 
+def test_substitute_simple_var_existing():
+    env = {"FOO": "SomeValue"}
+    template = "Hello, $FOO!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, SomeValue!")
+
+def test_substitute_simple_var_missing():
+    env = {}
+    template = "Hello, $FOO!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, !")
+
+def test_substitute_simple_var_with_underscore():
+    env = {"FOO_BAR": "TestValue"}
+    template = "Hello, $FOO_BAR!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, TestValue!")
+
+def test_substitute_simple_var_with_numbers():
+    env = {"FOO123": "NumericValue"}
+    template = "Hello, $FOO123!"
+    result = var_subst(template, env)
+    assert_equals(result, "Hello, NumericValue!")
+
+def test_substitute_dollar_without_var():
+    env = {}
+    template = "Price: $100"
+    result = var_subst(template, env)
+    assert_equals(result, "Price: $100")
+
+def test_substitute_mixed_formats():
+    env = {"FOO": "Simple", "BAR": "Braced"}
+    template = "Mix: $FOO and ${BAR:-default}"
+    result = var_subst(template, env)
+    assert_equals(result, "Mix: Simple and Braced")
+
 def run_tests():
     test_substitute_with_existing_var()
     test_substitute_with_missing_var_no_default()
     test_substitute_with_missing_var_with_default()
     test_substitute_with_existing_var_and_default()
     test_substitute_with_malformed_pattern()
+    test_substitute_simple_var_existing()
+    test_substitute_simple_var_missing()
+    test_substitute_simple_var_with_underscore()
+    test_substitute_simple_var_with_numbers()
+    test_substitute_dollar_without_var()
+    test_substitute_mixed_formats()
     print("All tests passed!")
 
 # Running the tests

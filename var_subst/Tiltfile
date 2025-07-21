@@ -6,39 +6,62 @@ def var_subst(template, env):
         var_name = parts[0]
         default_val = parts[1] if len(parts) > 1 else None
         return (var_name, default_val)
-    
+
     start_idx = 0
     result = ""
     while start_idx < len(template):
-        # Find next "${"
-        open_idx = template.find("${", start_idx)
-        if open_idx == -1:
+        # Find next "$"
+        dollar_idx = template.find("$", start_idx)
+        if dollar_idx == -1:
             # If not found, append rest of template and break
             result += template[start_idx:]
             break
-        
-        # Append content before "${"
-        result += template[start_idx:open_idx]
-        
-        # Find closing "}"
-        close_idx = template.find("}", open_idx)
-        if close_idx == -1:
-            # Malformed pattern; append rest and break
-            result += template[open_idx:]
-            break
-        
-        # Extract content inside "${...}"
-        inner_content = template[open_idx + 2:close_idx]
-        var_name, default_val = extract_var_and_default(inner_content)
-        
-        # Use value from env if exists, otherwise use default value
-        value = os.environ.get(var_name, default_val)
-        if value == None:
-            value = ""  # If var doesn't exist and no default is provided
-        
-        result += value
-        
-        # Move on to next segment
-        start_idx = close_idx + 1
+
+        # Append content before "$"
+        result += template[start_idx:dollar_idx]
+
+        # Check if it's "${}" or "$VAR" format
+        if dollar_idx + 1 < len(template) and template[dollar_idx + 1] == "{":
+            # Handle ${VAR} or ${VAR:-default} format
+            open_idx = dollar_idx
+            close_idx = template.find("}", open_idx)
+            if close_idx == -1:
+                # Malformed pattern; append rest and break
+                result += template[open_idx:]
+                break
+
+            # Extract content inside "${...}"
+            inner_content = template[open_idx + 2:close_idx]
+            var_name, default_val = extract_var_and_default(inner_content)
+
+            # Use value from env if exists, otherwise use default value
+            value = env.get(var_name, default_val)
+            if value == None:
+                value = ""  # If var doesn't exist and no default is provided
+
+            result += value
+            start_idx = close_idx + 1
+        else:
+            # Handle $VAR format (no braces)
+            var_start = dollar_idx + 1
+            var_end = var_start
+
+            # Check if the first character is a valid variable name start (letter or underscore)
+            if var_start < len(template) and (template[var_start].isalpha() or template[var_start] == "_"):
+                # Find the end of the variable name (alphanumeric and underscore)
+                while var_end < len(template) and (template[var_end].isalnum() or template[var_end] == "_"):
+                    var_end += 1
+
+                # Extract variable name
+                var_name = template[var_start:var_end]
+
+                # Use value from env if exists, otherwise empty string
+                value = env.get(var_name, "")
+                result += value
+                start_idx = var_end
+            else:
+                # Not a valid variable name (like $100), just append the $ and continue
+                result += "$"
+                start_idx = dollar_idx + 1
 
     return result
