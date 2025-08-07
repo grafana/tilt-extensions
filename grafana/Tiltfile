@@ -9,6 +9,50 @@ load('ext://secret', 'secret_from_dict')
 load('ext://local_output', 'local_output')
 
 
+def create_cert_configmap_and_mount(name, mounted_filename, namespace, from_file):
+    """Creates a configmap for a certificate file and returns the corresponding mount dictionary.
+
+    Args:
+        name: The name for the configmap (typically the cert filename)
+        namespace: The Kubernetes namespace
+        from_file: The path to the certificate file
+
+    Returns:
+        A dictionary representing the mount configuration for the certificate
+    """
+    configmap_create(
+        name = name,
+        namespace = namespace,
+        from_file = from_file
+    )
+
+    return {
+        'name'     : name,
+        'mountPath': '/etc/grafana/certs/' + mounted_filename,
+        'subPath'  : mounted_filename,
+        'configMap': name,
+        'readOnly' : 'true'
+    }
+
+def load_apiserver_certs_as_configmap(namespace):
+    """
+    Clients certs are required for the apiserver to do the aggregation, so the must be mounted as configmaps
+    in the container. This function, and the one above, will create the configmaps and return the config needed
+    for the helm chart to mount the configmaps.
+    """
+    extra_mounts = []
+    # Load the apiserver certs as configmaps
+    cert_configs = [
+        ('apiserver-client-key-pem', 'apiserver-client-key.pem', os.path.dirname(__file__) + '/certs/api-server-aggregation/apiserver-client-key.pem'),
+        ('apiserver-client-pem', 'apiserver-client.pem', os.path.dirname(__file__) + '/certs/api-server-aggregation/apiserver-client.pem'),
+    ]
+
+    for name, mounted_filename, from_file in cert_configs:
+        mount = create_cert_configmap_and_mount(name, mounted_filename, namespace, from_file)
+        extra_mounts.append(mount)
+
+    return extra_mounts
+
 # This will generate a Dockerfile with COPY statements for each plugin that has been checked out
 def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_version):
     dockerfile="""
@@ -20,7 +64,7 @@ def grafana_dockerfile_contents(context_dir, configs, grafana_image, grafana_ver
         dockerfile += "COPY --chown=grafana:root %s /tmp/plugins/%s\n" % (os.path.relpath(os.path.abspath(context_dir + '/' + config.plugin_dist_dir), os.path.abspath(context_dir)), config.plugin_id)
 
     dockerfile += """
-    # The Grafana Helm Chart puts a volume mount over /var/lib/grafana, so we cannot 
+    # The Grafana Helm Chart puts a volume mount over /var/lib/grafana, so we cannot
     # copy files there. This is a hack. We might be able to entrypoint around this
     RUN echo "#!/bin/sh" > /tmp/install-and-run.sh && \
         echo "/bin/tar cf - plugins -C /tmp | (cd /var/lib/grafana; tar xfv -)" >> /tmp/install-and-run.sh && \
@@ -46,7 +90,7 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
         plugin_id = plugin_config['id']
         plugin_executable = plugin_config.get('executable', plugin_id)
         plugin_dir = os.path.relpath(os.path.dirname(os.path.abspath(file)) + '/..', base_path)
-        
+
         plugin_dist_dir = plugin_dir + '/dist'
         plugin_src_dir = plugin_dir + '/src'
 
@@ -57,7 +101,7 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
                              plugin_src_dir     = plugin_src_dir,
                              enable_tracing     = plugin_config.get('tracing', False) == True,
                              grafana_plugin_dir = "/var/lib/grafana/plugins/%s" % plugin_id,
-                             restart_command    = run_func('pkill {plugin_executable} || /bin/true'.format(plugin_executable=plugin_executable), 
+                             restart_command    = run_func('pkill {plugin_executable} || /bin/true'.format(plugin_executable=plugin_executable),
                                                             trigger = ['{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)]))
     return configs
 
@@ -104,7 +148,7 @@ def grafana(
         plugin_json_files.append(plugin_files)
 
     plugins = load_plugins(os.path.abspath(context), plugin_json_files)
-    
+
     # This is the Grafana docker image we are about to build
     image_repository = grafana_image
     # TODO: Make this configurable
@@ -114,14 +158,14 @@ def grafana(
     # To trigger a rebuild/reload of Grafana, pickup the artifacts of the plugin builds (plugin/dist)
     watched_files = [os.path.relpath(os.path.abspath( context + '/' + config.plugin_dist_dir), os.path.abspath(context))
                     for (_, config) in plugins.items()]
-    # If the 'only' param below is empty, which is the case for AppPlatform repos, 
+    # If the 'only' param below is empty, which is the case for AppPlatform repos,
     # Tilt will rebuild grafana for any changes in 'context',
-    # which will be anything in the parent directory of this repo. To ensusure that the 'only' 
+    # which will be anything in the parent directory of this repo. To ensusure that the 'only'
     # param is not empty add the default values file which should probably trigger a rebuild anyway.
     watched_files.append(default_grafana_values)
 
     print("context: %s" % context)
-    
+
     docker_build("%s:%s" % (image_repository, image_tag),
                 dockerfile_contents = grafana_dockerfile_contents(context, plugins, grafana_image, grafana_version),
                 context             = context,
@@ -132,8 +176,8 @@ def grafana(
     chart_values = read_yaml(default_grafana_values)
 
     # Create admin/admin secret for the Helm Chart
-    k8s_yaml(secret_from_dict(name = 'grafana-admin-creds', 
-                              namespace = namespace, 
+    k8s_yaml(secret_from_dict(name = 'grafana-admin-creds',
+                              namespace = namespace,
                               inputs = {'admin-user': 'admin', 'admin-password':'admin'}))
 
     # Set the env vars
@@ -150,6 +194,7 @@ def grafana(
 
     # The assumption is that the Tiltfiles in the plugin repos will create the configmaps
     # with the name <plugin_id>-provisioning. If they don't, then we need to add them here.
+    all_extra_mounts = []
     if len(extra_configmaps_mounts) == 0:
         extra_mounts = []
         extra_mounts.extend(extra_configmaps_mounts)
@@ -163,9 +208,23 @@ def grafana(
                 'configMap': '%s-provisioning' % plugin_id,
                 'readOnly' : 'true'
             })
-        chart_values['extraConfigmapMounts'] = extra_mounts
+        all_extra_mounts = extra_mounts
     else:
-        chart_values['extraConfigmapMounts'] = extra_configmaps_mounts
+        all_extra_mounts = extra_configmaps_mounts
+
+    # Load the apiserver certs as configmaps
+    all_extra_mounts.extend(load_apiserver_certs_as_configmap(namespace))
+
+    chart_values["grafana.ini"]['grafana-apiserver'] = {}
+    chart_values["grafana.ini"]['grafana-apiserver']['proxy_client_cert_file'] = '/etc/grafana/certs/apiserver-client.pem'
+    chart_values["grafana.ini"]['grafana-apiserver']['proxy_client_key_file'] = '/etc/grafana/certs/apiserver-client-key.pem'
+    # This may come later, as another way to configure the grafana apiserver to do the aggregation
+    # but it will require changes to each plugin's Tiltfile to communicate the intent
+    # see https://github.com/grafana/grafana/blob/35d127491912428075dba6f08a2c945adda17561/pkg/services/apiserver/aggregator/examples/autoregister/apiservices.yaml
+    # for more details
+    # chart_values["grafana.ini"]['grafana-apiserver']['remote_services_file'] = '/etc/grafana/certs/remote-services.yaml'
+
+    chart_values['extraConfigmapMounts'] = all_extra_mounts
 
     # Setup tracing for plugins that want it
     for (_, plugin) in plugins.items():
