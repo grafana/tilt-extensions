@@ -1,0 +1,201 @@
+# Compose Composer Extension
+# Dynamically assembles docker-compose files using the `include` directive
+# to preserve relative path resolution for each component.
+#
+# Usage:
+#   load('ext://compose_composer', 'generate_master_compose', 'parse_cli_plugins')
+#   
+#   cli_plugins = parse_cli_plugins(os.path.dirname(__file__))
+#   dependencies = core_dependencies + cli_plugins
+#   master_compose = generate_master_compose(dependencies, local_compose_paths=[...])
+#   docker_compose(encode_yaml(master_compose))
+#
+# CLI Usage:
+#   tilt up -- plugin-name ../relative/path /absolute/path https://github.com/org/repo.git
+#
+# Dependency schema (two modes):
+#
+# Mode 1 - Direct compose file (compose_file):
+#   name: str                      - Dependency name (required)
+#   compose_file: str              - Path, URL, or directory to compose file (required)
+#                                    Supports:
+#                                    - Direct file path: /path/to/docker-compose.yaml
+#                                    - Directory path: /path/to/plugin (appends /docker-compose.yaml)
+#                                    - Git URL: https://github.com/org/repo.git#ref:path/compose.yaml
+#
+# Mode 2 - Tiltfile extension (url):
+#   name: str                      - Extension name (required)
+#   url: str                       - Extension repo URL, file:// or https:// (required)
+#   ref: str                       - Git ref for https:// URLs (default: 'main')
+#   repo_path: str                 - Path within repo (default: name)
+#   get_compose_path_function: str - Function to call for compose path (default: 'get_compose_path')
+#
+# Future extensions:
+#   overrides: dict                - Compose overrides to apply
+#   pre_hook: str                  - Function to call before loading
+#   post_hook: str                 - Function to call after loading
+
+# ============================================================================
+# CLI Argument Parsing
+# ============================================================================
+
+config.define_string_list('args', args=True, usage='Plugins to load (name, path, or URL)')
+_cfg = config.parse()
+
+def _is_url(s):
+    """Check if string is a URL (git or https)."""
+    return '://' in s or s.startswith('git@')
+
+def _is_compose_file(path):
+    """Check if path points directly to a compose file."""
+    return path.endswith('.yaml') or path.endswith('.yml')
+
+def _resolve_plugin_spec(plugin, tiltfile_dir):
+    """
+    Resolve a plugin specifier to a (name, compose_file) tuple.
+    - URLs pass through unchanged
+    - Absolute paths use as-is
+    - Relative paths resolve from tiltfile_dir
+    - Plain names are treated as adjacent directories
+    """
+    # URLs pass through
+    if _is_url(plugin):
+        # Extract name from URL (last segment, minus extensions)
+        name = plugin.split('/')[-1].split('#')[0].replace('.git', '').replace('.yaml', '').replace('.yml', '')
+        return (name, plugin)
+    
+    # Resolve local paths
+    if plugin.startswith('/'):
+        path = plugin
+    elif plugin.startswith('.'):
+        path = os.path.abspath(tiltfile_dir + '/' + plugin)
+    else:
+        # Adjacent directory - look in parent
+        path = os.path.abspath(tiltfile_dir + '/../' + plugin)
+    
+    # Derive name from path
+    if _is_compose_file(path):
+        name = os.path.basename(os.path.dirname(path))
+    else:
+        name = os.path.basename(path)
+    
+    return (name, path)
+
+def parse_cli_plugins(tiltfile_dir):
+    """
+    Parse CLI positional args and return list of dependency dicts.
+    
+    Args:
+        tiltfile_dir: Directory of the calling Tiltfile (for relative path resolution)
+                      Typically: os.path.dirname(__file__)
+    
+    Returns:
+        List of dependency dicts with 'name' and 'compose_file' keys
+    """
+    plugins = _cfg.get('args', [])
+    deps = []
+    
+    for plugin in plugins:
+        name, compose_file = _resolve_plugin_spec(plugin, tiltfile_dir)
+        deps.append({
+            'name': name,
+            'compose_file': compose_file,
+        })
+        print("CLI plugin: " + name + " -> " + compose_file)
+    
+    return deps
+
+# ============================================================================
+# Compose File Resolution
+# ============================================================================
+
+def _resolve_compose_file_path(compose_file):
+    """
+    Resolve a compose_file value to a usable path.
+    - URLs pass through unchanged
+    - Paths ending in .yaml/.yml are used as-is
+    - Directory paths get /docker-compose.yaml appended
+    """
+    if _is_url(compose_file):
+        return compose_file
+    elif _is_compose_file(compose_file):
+        return compose_file
+    else:
+        return compose_file + '/docker-compose.yaml'
+
+def _load_extension(dep):
+    """Load a Tiltfile extension and populate its symbols."""
+    name = dep['name']
+    url = dep['url']
+    ref = dep.get('ref', 'main')
+    repo_path = dep.get('repo_path', name)
+    
+    if url.startswith('file://'):
+        v1alpha1.extension_repo(name=name, url=url)
+    else:
+        v1alpha1.extension_repo(name=name, url=url, ref=ref)
+    
+    v1alpha1.extension(name=name, repo_name=name, repo_path=repo_path)
+    dep['symbols'] = load_dynamic('ext://' + name)
+    return dep
+
+def _get_compose_path_from_extension(dep):
+    """Get compose path from a loaded extension's function."""
+    fn_name = dep.get('get_compose_path_function', 'get_compose_path')
+    symbols = dep.get('symbols')
+    
+    if not symbols:
+        print("Warning: " + dep['name'] + " has no symbols")
+        return None
+    
+    fn = symbols.get(fn_name)
+    if not fn:
+        print("Warning: " + dep['name'] + " has no " + fn_name + " function")
+        return None
+    
+    return fn()
+
+def _resolve_compose_path(dep):
+    """Resolve compose file path from a dependency."""
+    name = dep['name']
+    
+    # Mode 1: Direct compose file
+    if 'compose_file' in dep:
+        return _resolve_compose_file_path(dep['compose_file'])
+    
+    # Mode 2: Tiltfile extension
+    if 'url' in dep:
+        _load_extension(dep)
+        return _get_compose_path_from_extension(dep)
+    
+    print("Warning: " + name + " has neither 'compose_file' nor 'url'")
+    return None
+
+# ============================================================================
+# Main Entry Point
+# ============================================================================
+
+def generate_master_compose(dependencies, local_compose_paths=[]):
+    """
+    Entry point: Generates a compose file using `include` directive.
+    
+    Args:
+        dependencies: List of dependency dicts (see schema above)
+        local_compose_paths: Additional local compose file paths to include
+    
+    Returns:
+        Dict with 'include' key containing all compose file paths
+    """
+    paths = []
+    
+    for dep in dependencies:
+        path = _resolve_compose_path(dep)
+        if path:
+            paths.append(path)
+            print("  - " + dep['name'] + ": " + path)
+    
+    for path in local_compose_paths:
+        paths.append(path)
+        print("  - local: " + path)
+    
+    return {'include': paths}
