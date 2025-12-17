@@ -7,33 +7,57 @@
 #   
 #   cli_plugins = parse_cli_plugins(os.path.dirname(__file__))
 #   dependencies = core_dependencies + cli_plugins
-#   master_compose = generate_master_compose(dependencies, local_compose_paths=[...])
+#   master_compose = generate_master_compose(dependencies, callbacks={...})
 #   docker_compose(encode_yaml(master_compose))
 #
 # CLI Usage:
 #   tilt up -- plugin-name ../relative/path /absolute/path https://github.com/org/repo.git
 #
-# Dependency schema (two modes):
-#
-# Mode 1 - Direct compose file (compose_file):
-#   name: str                      - Dependency name (required)
-#   compose_file: str              - Path, URL, or directory to compose file (required)
-#                                    Supports:
-#                                    - Direct file path: /path/to/docker-compose.yaml
-#                                    - Directory path: /path/to/plugin (appends /docker-compose.yaml)
-#                                    - Git URL: https://github.com/org/repo.git#ref:path/compose.yaml
-#
-# Mode 2 - Tiltfile extension (url):
+# Dependency schema:
 #   name: str                      - Extension name (required)
 #   url: str                       - Extension repo URL, file:// or https:// (required)
 #   ref: str                       - Git ref for https:// URLs (default: 'main')
 #   repo_path: str                 - Path within repo (default: name)
 #   get_compose_path_function: str - Function to call for compose path (default: 'get_compose_path')
+#   compose_overrides: dict        - Static overrides merged into compose before callbacks (optional)
+#                                    Uses deep merge - nested dicts are merged, lists replaced
 #
-# Future extensions:
-#   overrides: dict                - Compose overrides to apply
-#   pre_hook: str                  - Function to call before loading
-#   post_hook: str                 - Function to call after loading
+# Callback Lifecycle (Action-Oriented):
+#   FILTER → IMPORT → TRANSFORM → MERGE → EMIT
+#
+# Callbacks:
+#   Callbacks allow dynamic modification of compose files during assembly.
+#   Two sources of callbacks:
+#     1. Explicit callbacks passed to generate_master_compose()
+#     2. Convention-based callbacks exported by extension Tiltfiles
+#
+#   Supported callbacks:
+#     on_filter_dependency(dep, context) -> dep|None
+#       - Called before loading each dependency
+#       - Return modified dep, or None to exclude
+#
+#     on_import_extension(dep, symbols, context)
+#       - Called after extension symbols are loaded
+#       - Informational only, no return value used
+#
+#     on_transform_compose(dep, compose_yaml, context) -> compose_yaml
+#       - Called for each compose file after loading and static overrides
+#       - Can modify the compose content
+#       - Return modified yaml or None for no changes
+#
+#     on_merge_composes(all_composes, context) -> all_composes
+#       - Called before final assembly with all resolved composes
+#       - Can add/remove/modify any compose entry
+#       - Return modified list or None for no changes
+#
+#     on_emit_master(master_compose, context) -> master_compose
+#       - Called after master compose is generated
+#       - Can modify the final output
+#       - Return modified compose or None for no changes
+#
+# Callback ordering:
+#   1. Originating Tiltfile callbacks run first
+#   2. Extension callbacks run in dependency load order
 
 # ============================================================================
 # CLI Argument Parsing
@@ -46,25 +70,21 @@ def _is_url(s):
     """Check if string is a URL (git or https)."""
     return '://' in s or s.startswith('git@')
 
-def _is_compose_file(path):
-    """Check if path points directly to a compose file."""
-    return path.endswith('.yaml') or path.endswith('.yml')
-
 def _resolve_plugin_spec(plugin, tiltfile_dir):
     """
-    Resolve a plugin specifier to a (name, compose_file) tuple.
-    - URLs pass through unchanged
-    - Absolute paths use as-is
-    - Relative paths resolve from tiltfile_dir
+    Resolve a plugin specifier to a dependency dict with url.
+    - URLs pass through as https
+    - Absolute paths become file:// URLs
+    - Relative paths resolve from tiltfile_dir and become file:// URLs
     - Plain names are treated as adjacent directories
     """
-    # URLs pass through
+    # Git/HTTPS URLs
     if _is_url(plugin):
         # Extract name from URL (last segment, minus extensions)
-        name = plugin.split('/')[-1].split('#')[0].replace('.git', '').replace('.yaml', '').replace('.yml', '')
-        return (name, plugin)
+        name = plugin.split('/')[-1].split('#')[0].replace('.git', '')
+        return {'name': name, 'url': plugin, '_from_cli': True}
     
-    # Resolve local paths
+    # Resolve local paths to absolute
     if plugin.startswith('/'):
         path = plugin
     elif plugin.startswith('.'):
@@ -74,12 +94,16 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         path = os.path.abspath(tiltfile_dir + '/../' + plugin)
     
     # Derive name from path
-    if _is_compose_file(path):
-        name = os.path.basename(os.path.dirname(path))
-    else:
-        name = os.path.basename(path)
+    name = os.path.basename(path)
     
-    return (name, path)
+    # Convert to file:// URL for extension loading
+    # For file:// URLs, the path IS the repo, so repo_path should be '.'
+    return {
+        'name': name,
+        'url': 'file://' + path,
+        'repo_path': '.',
+        '_from_cli': True,
+    }
 
 def parse_cli_plugins(tiltfile_dir):
     """
@@ -90,38 +114,21 @@ def parse_cli_plugins(tiltfile_dir):
                       Typically: os.path.dirname(__file__)
     
     Returns:
-        List of dependency dicts with 'name' and 'compose_file' keys
+        List of dependency dicts with 'name' and 'url' keys
     """
     plugins = _cfg.get('args', [])
     deps = []
     
     for plugin in plugins:
-        name, compose_file = _resolve_plugin_spec(plugin, tiltfile_dir)
-        deps.append({
-            'name': name,
-            'compose_file': compose_file,
-        })
-        print("CLI plugin: " + name + " -> " + compose_file)
+        dep = _resolve_plugin_spec(plugin, tiltfile_dir)
+        deps.append(dep)
+        print("CLI plugin: " + dep['name'] + " -> " + dep['url'])
     
     return deps
 
 # ============================================================================
-# Compose File Resolution
+# Extension Loading
 # ============================================================================
-
-def _resolve_compose_file_path(compose_file):
-    """
-    Resolve a compose_file value to a usable path.
-    - URLs pass through unchanged
-    - Paths ending in .yaml/.yml are used as-is
-    - Directory paths get /docker-compose.yaml appended
-    """
-    if _is_url(compose_file):
-        return compose_file
-    elif _is_compose_file(compose_file):
-        return compose_file
-    else:
-        return compose_file + '/docker-compose.yaml'
 
 def _load_extension(dep):
     """Load a Tiltfile extension and populate its symbols."""
@@ -145,57 +152,429 @@ def _get_compose_path_from_extension(dep):
     symbols = dep.get('symbols')
     
     if not symbols:
-        print("Warning: " + dep['name'] + " has no symbols")
-        return None
+        fail("Extension " + dep['name'] + " has no symbols")
     
     fn = symbols.get(fn_name)
     if not fn:
-        print("Warning: " + dep['name'] + " has no " + fn_name + " function")
-        return None
+        fail("Extension " + dep['name'] + " has no " + fn_name + " function")
     
     return fn()
 
-def _resolve_compose_path(dep):
-    """Resolve compose file path from a dependency."""
-    name = dep['name']
+# ============================================================================
+# Deep Merge Utility
+# ============================================================================
+
+def _deep_merge(base, override):
+    """
+    Deep merge override into base.
+    - Dicts are merged recursively
+    - Lists and other values are replaced
     
-    # Mode 1: Direct compose file
-    if 'compose_file' in dep:
-        return _resolve_compose_file_path(dep['compose_file'])
+    Returns a new dict (does not modify base).
+    """
+    if type(base) != 'dict' or type(override) != 'dict':
+        return override
     
-    # Mode 2: Tiltfile extension
-    if 'url' in dep:
-        _load_extension(dep)
-        return _get_compose_path_from_extension(dep)
+    result = {}
     
-    print("Warning: " + name + " has neither 'compose_file' nor 'url'")
-    return None
+    # Start with all keys from base
+    for key in base:
+        result[key] = base[key]
+    
+    # Merge/override with keys from override
+    for key in override:
+        if key in result and type(result[key]) == 'dict' and type(override[key]) == 'dict':
+            result[key] = _deep_merge(result[key], override[key])
+        else:
+            result[key] = override[key]
+    
+    return result
+
+# ============================================================================
+# Callback Infrastructure
+# ============================================================================
+
+# Supported callback event names (action-oriented)
+_CALLBACK_EVENTS = [
+    'on_filter_dependency',
+    'on_import_extension',
+    'on_transform_compose',
+    'on_merge_composes',
+    'on_emit_master',
+]
+
+def _collect_extension_callbacks(loaded_deps):
+    """Collect callback functions from loaded extensions."""
+    callbacks = {event: [] for event in _CALLBACK_EVENTS}
+    
+    for dep in loaded_deps:
+        symbols = dep.get('symbols', {})
+        for event in _CALLBACK_EVENTS:
+            fn = symbols.get(event)
+            if fn:
+                callbacks[event].append({
+                    'fn': fn,
+                    'source': dep['name'],
+                })
+    
+    return callbacks
+
+def _invoke_filter_dependency(dep, context, extension_callbacks, originating_callbacks):
+    """
+    Invoke on_filter_dependency callbacks.
+    Any callback returning None excludes the dependency.
+    
+    Returns:
+        The filtered dep, or None to exclude
+    """
+    result = dep
+    
+    # Originating callback first
+    orig_fn = originating_callbacks.get('on_filter_dependency')
+    if orig_fn:
+        result = orig_fn(result, context)
+        if result == None:
+            return None
+    
+    # Extension callbacks in load order
+    for cb in extension_callbacks.get('on_filter_dependency', []):
+        result = cb['fn'](result, context)
+        if result == None:
+            return None
+    
+    return result
+
+def _invoke_import_extension(dep, symbols, context, extension_callbacks, originating_callbacks):
+    """
+    Invoke on_import_extension callbacks.
+    Informational only - return values ignored.
+    """
+    # Originating callback first
+    orig_fn = originating_callbacks.get('on_import_extension')
+    if orig_fn:
+        orig_fn(dep, symbols, context)
+    
+    # Extension callbacks in load order
+    for cb in extension_callbacks.get('on_import_extension', []):
+        cb['fn'](dep, symbols, context)
+
+def _invoke_transform_compose(dep, compose_yaml, context, extension_callbacks, originating_callbacks):
+    """
+    Invoke on_transform_compose callbacks, chaining results.
+    Originating callbacks run first, then extension callbacks.
+    
+    Returns:
+        The final modified compose_yaml after all callbacks
+    """
+    result = compose_yaml
+    
+    # Originating callback first
+    orig_fn = originating_callbacks.get('on_transform_compose')
+    if orig_fn:
+        new_result = orig_fn(dep, result, context)
+        if new_result != None:
+            result = new_result
+    
+    # Extension callbacks in load order
+    for cb in extension_callbacks.get('on_transform_compose', []):
+        new_result = cb['fn'](dep, result, context)
+        if new_result != None:
+            result = new_result
+    
+    return result
+
+def _invoke_merge_composes(all_composes, context, extension_callbacks, originating_callbacks):
+    """
+    Invoke on_merge_composes callbacks, chaining results.
+    Originating callbacks run first, then extension callbacks.
+    
+    Returns:
+        The final modified all_composes list after all callbacks
+    """
+    result = all_composes
+    
+    # Originating callback first
+    orig_fn = originating_callbacks.get('on_merge_composes')
+    if orig_fn:
+        new_result = orig_fn(result, context)
+        if new_result != None:
+            result = new_result
+    
+    # Extension callbacks in load order
+    for cb in extension_callbacks.get('on_merge_composes', []):
+        new_result = cb['fn'](result, context)
+        if new_result != None:
+            result = new_result
+    
+    return result
+
+def _invoke_emit_master(master_compose, context, extension_callbacks, originating_callbacks):
+    """
+    Invoke on_emit_master callbacks, chaining results.
+    Originating callbacks run first, then extension callbacks.
+    
+    Returns:
+        The final master compose after all callbacks
+    """
+    result = master_compose
+    
+    # Originating callback first
+    orig_fn = originating_callbacks.get('on_emit_master')
+    if orig_fn:
+        new_result = orig_fn(result, context)
+        if new_result != None:
+            result = new_result
+    
+    # Extension callbacks in load order
+    for cb in extension_callbacks.get('on_emit_master', []):
+        new_result = cb['fn'](result, context)
+        if new_result != None:
+            result = new_result
+    
+    return result
+
+# ============================================================================
+# Compose File Staging
+# ============================================================================
+
+def _deep_copy(obj):
+    """Create a deep copy of a dict/list structure using YAML round-trip."""
+    return decode_yaml(encode_yaml(obj))
+
+def _stage_compose_file(dep_name, content, staging_dir):
+    """
+    Write modified compose content to staging directory.
+    
+    Returns the absolute path to the staged file.
+    """
+    staged_path = staging_dir + '/' + dep_name + '.yaml'
+    
+    # Ensure staging directory exists
+    local('mkdir -p "' + staging_dir + '"', quiet=True)
+    
+    # Write the YAML content
+    yaml_content = encode_yaml(content)
+    local('cat > "' + staged_path + '"', stdin=yaml_content, quiet=True)
+    
+    return staged_path
+
+def _generate_include_entry(entry):
+    """
+    Generate the appropriate include directive entry.
+    
+    - Unmodified: simple path string
+    - Modified: object with path and project_directory
+    """
+    if not entry['modified']:
+        return entry['compose_path']
+    else:
+        return {
+            'path': entry['staged_path'],
+            'project_directory': entry['project_directory'],
+        }
 
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 
-def generate_master_compose(dependencies, local_compose_paths=[]):
+def generate_master_compose(
+    dependencies,
+    local_compose_paths=[],
+    callbacks={},
+    staging_dir=None,
+):
     """
-    Entry point: Generates a compose file using `include` directive.
+    Generate master compose file with callback support.
     
     Args:
-        dependencies: List of dependency dicts (see schema above)
+        dependencies: List of dependency dicts. Each must have:
+            - name: str (required)
+            - url: str (required)
+            - compose_overrides: dict (optional) - merged before callbacks
         local_compose_paths: Additional local compose file paths to include
+        callbacks: Dict of callback functions from orchestrating Tiltfile:
+            {
+                'on_filter_dependency': fn(dep, context) -> dep|None,
+                'on_import_extension': fn(dep, symbols, context),
+                'on_transform_compose': fn(dep, compose_yaml, context) -> yaml,
+                'on_merge_composes': fn(all_composes, context) -> composes,
+                'on_emit_master': fn(master_compose, context) -> compose,
+            }
+        staging_dir: Directory for modified compose files.
+                     Defaults to .compose-stage/ in current working directory.
     
     Returns:
-        Dict with 'include' key containing all compose file paths
+        Dict with 'include' key for docker_compose()
     """
-    paths = []
+    # Initialize context
+    all_dep_names = [d['name'] for d in dependencies]
+    cli_dep_names = [d['name'] for d in dependencies if d.get('_from_cli')]
     
+    context = {
+        'phase': 'filter',
+        'all_deps': dependencies,
+        'all_dep_names': all_dep_names,
+        'cli_dep_names': cli_dep_names,
+        'loaded_deps': [],
+        'loaded_dep_names': [],
+        'loaded_symbols': {},
+        'resolved_composes': [],
+        'staging_dir': staging_dir if staging_dir else os.path.abspath('.compose-stage'),
+    }
+    
+    # We need to collect extension callbacks incrementally as extensions load
+    # Initially empty - will be populated as we load extensions
+    extension_callbacks = {event: [] for event in _CALLBACK_EVENTS}
+    
+    # ========================================================================
+    # Phase 1: FILTER - Filter dependencies before loading
+    # ========================================================================
+    print("\nFiltering dependencies:")
+    context['phase'] = 'filter'
+    
+    filtered_deps = []
     for dep in dependencies:
-        path = _resolve_compose_path(dep)
-        if path:
-            paths.append(path)
-            print("  - " + dep['name'] + ": " + path)
+        if 'url' not in dep:
+            fail("Dependency " + dep['name'] + " must have 'url' field")
+        
+        # Invoke on_filter_dependency (only originating callbacks at this point)
+        filtered_dep = _invoke_filter_dependency(dep, context, extension_callbacks, callbacks)
+        
+        if filtered_dep == None:
+            print("  Filtered out: " + dep['name'])
+        else:
+            filtered_deps.append(filtered_dep)
+            print("  Included: " + filtered_dep['name'])
     
+    # Update context with filtered deps
+    context['all_deps'] = filtered_deps
+    context['all_dep_names'] = [d['name'] for d in filtered_deps]
+    
+    # ========================================================================
+    # Phase 2: IMPORT - Load extensions and collect symbols
+    # ========================================================================
+    print("\nImporting extensions:")
+    context['phase'] = 'import'
+    
+    for dep in filtered_deps:
+        print("  Loading: " + dep['name'])
+        _load_extension(dep)
+        
+        symbols = dep.get('symbols', {})
+        context['loaded_deps'].append(dep)
+        context['loaded_dep_names'].append(dep['name'])
+        context['loaded_symbols'][dep['name']] = symbols
+        
+        # Collect callbacks from this extension
+        for event in _CALLBACK_EVENTS:
+            fn = symbols.get(event)
+            if fn:
+                extension_callbacks[event].append({
+                    'fn': fn,
+                    'source': dep['name'],
+                })
+        
+        # Invoke on_import_extension callbacks
+        _invoke_import_extension(dep, symbols, context, extension_callbacks, callbacks)
+    
+    # ========================================================================
+    # Phase 3: TRANSFORM - Resolve and transform compose files
+    # ========================================================================
+    print("\nTransforming compose files:")
+    context['phase'] = 'transform'
+    resolved = []
+    
+    for dep in filtered_deps:
+        compose_path = _get_compose_path_from_extension(dep)
+        project_dir = os.path.dirname(compose_path)
+        
+        print("  " + dep['name'] + ": " + compose_path)
+        
+        # Read the compose file content
+        content = read_yaml(compose_path)
+        
+        # Apply static compose_overrides BEFORE callbacks
+        overrides = dep.get('compose_overrides')
+        if overrides:
+            print("    -> Applying compose_overrides")
+            content = _deep_merge(content, overrides)
+        
+        original_content = _deep_copy(content)
+        
+        entry = {
+            'dep': dep,
+            'compose_path': compose_path,
+            'project_directory': project_dir,
+            'content': content,
+            'original_content': original_content,
+            'modified': False,
+            'staged_path': None,
+        }
+        
+        # Invoke on_transform_compose callbacks
+        context['current_project_directory'] = project_dir
+        new_content = _invoke_transform_compose(
+            dep, content, context, extension_callbacks, callbacks
+        )
+        entry['content'] = new_content
+        
+        # Check if content was modified (from original after overrides)
+        if encode_yaml(entry['content']) != encode_yaml(entry['original_content']):
+            entry['modified'] = True
+            entry['staged_path'] = _stage_compose_file(
+                dep['name'],
+                entry['content'],
+                context['staging_dir'],
+            )
+            print("    -> Transformed, staged to: " + entry['staged_path'])
+        
+        # Also mark as modified if overrides were applied (need staging for project_directory)
+        if overrides and not entry['modified']:
+            entry['modified'] = True
+            entry['staged_path'] = _stage_compose_file(
+                dep['name'],
+                entry['content'],
+                context['staging_dir'],
+            )
+            print("    -> Overrides applied, staged to: " + entry['staged_path'])
+        
+        resolved.append(entry)
+        context['resolved_composes'] = resolved
+    
+    # ========================================================================
+    # Phase 4: MERGE - Final modifications before assembly
+    # ========================================================================
+    print("\nMerging composes:")
+    context['phase'] = 'merge'
+    resolved = _invoke_merge_composes(
+        resolved, context, extension_callbacks, callbacks
+    )
+    
+    # ========================================================================
+    # Phase 5: EMIT - Generate final master compose
+    # ========================================================================
+    print("\nEmitting master compose:")
+    context['phase'] = 'emit'
+    includes = []
+    
+    for entry in resolved:
+        include_entry = _generate_include_entry(entry)
+        includes.append(include_entry)
+        if entry['modified']:
+            print("  - " + entry['dep']['name'] + ": " + entry['staged_path'] + " (project_dir: " + entry['project_directory'] + ")")
+        else:
+            print("  - " + entry['dep']['name'] + ": " + entry['compose_path'])
+    
+    # Add local compose paths
     for path in local_compose_paths:
-        paths.append(path)
+        includes.append(path)
         print("  - local: " + path)
     
-    return {'include': paths}
+    master_compose = {'include': includes}
+    
+    # Invoke on_emit_master callbacks
+    master_compose = _invoke_emit_master(
+        master_compose, context, extension_callbacks, callbacks
+    )
+    
+    return master_compose
