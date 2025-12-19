@@ -1,0 +1,451 @@
+# Tests for compose_composer extension
+# Run with: tilt ci (from this directory)
+# Or: make test (from parent directory)
+
+load('../Tiltfile', 'test_exports', 'generate_master_compose', 'parse_cli_plugins')
+
+# Get internal functions for testing
+_internals = test_exports()
+deep_merge = _internals['deep_merge']
+deep_copy = _internals['deep_copy']
+merge_dependency_configs = _internals['merge_dependency_configs']
+collect_wire_when_rules = _internals['collect_wire_when_rules']
+apply_wire_when_rules = _internals['apply_wire_when_rules']
+is_url = _internals['is_url']
+resolve_plugin_spec = _internals['resolve_plugin_spec']
+
+# ============================================================================
+# Test Helpers
+# ============================================================================
+
+def assert_equals(actual, expected, msg=""):
+    """Assert that actual equals expected."""
+    if actual != expected:
+        fail_msg = "Expected '{}', got '{}'".format(expected, actual)
+        if msg:
+            fail_msg = msg + ": " + fail_msg
+        fail(fail_msg)
+
+def assert_true(condition, msg=""):
+    """Assert that condition is true."""
+    if not condition:
+        fail(msg if msg else "Assertion failed")
+
+def assert_in(item, collection, msg=""):
+    """Assert that item is in collection."""
+    if item not in collection:
+        fail_msg = "'{}' not in '{}'".format(item, collection)
+        if msg:
+            fail_msg = msg + ": " + fail_msg
+        fail(fail_msg)
+
+# ============================================================================
+# deep_merge Tests
+# ============================================================================
+
+def test_deep_merge_simple_dicts():
+    """Test merging two simple dicts."""
+    base = {'a': 1, 'b': 2}
+    override = {'b': 3, 'c': 4}
+    result = deep_merge(base, override)
+    assert_equals(result['a'], 1, "Base value should be preserved")
+    assert_equals(result['b'], 3, "Override should take precedence")
+    assert_equals(result['c'], 4, "New key should be added")
+    print("  [PASS] test_deep_merge_simple_dicts")
+
+def test_deep_merge_nested_dicts():
+    """Test merging nested dicts recursively."""
+    base = {'outer': {'inner1': 'a', 'inner2': 'b'}}
+    override = {'outer': {'inner2': 'c', 'inner3': 'd'}}
+    result = deep_merge(base, override)
+    assert_equals(result['outer']['inner1'], 'a', "Nested base value preserved")
+    assert_equals(result['outer']['inner2'], 'c', "Nested override takes precedence")
+    assert_equals(result['outer']['inner3'], 'd', "Nested new key added")
+    print("  [PASS] test_deep_merge_nested_dicts")
+
+def test_deep_merge_lists_concatenate():
+    """Test that lists are concatenated, not replaced."""
+    base = {'items': ['a', 'b']}
+    override = {'items': ['c', 'd']}
+    result = deep_merge(base, override)
+    assert_equals(len(result['items']), 4, "Lists should be concatenated")
+    assert_in('a', result['items'])
+    assert_in('d', result['items'])
+    print("  [PASS] test_deep_merge_lists_concatenate")
+
+def test_deep_merge_lists_dedup():
+    """Test that duplicate list items are not added."""
+    base = {'items': ['a', 'b']}
+    override = {'items': ['b', 'c']}
+    result = deep_merge(base, override)
+    assert_equals(len(result['items']), 3, "Duplicates should not be added")
+    print("  [PASS] test_deep_merge_lists_dedup")
+
+def test_deep_merge_does_not_mutate():
+    """Test that base dict is not mutated."""
+    base = {'a': 1}
+    override = {'b': 2}
+    result = deep_merge(base, override)
+    assert_true('b' not in base, "Base should not be mutated")
+    print("  [PASS] test_deep_merge_does_not_mutate")
+
+def test_deep_merge_compose_overrides():
+    """Test merging compose-like structures."""
+    base = {
+        'services': {
+            'grafana': {
+                'environment': {'VAR1': 'val1'},
+                'volumes': ['/vol1:/mount1'],
+            },
+        },
+    }
+    override = {
+        'services': {
+            'grafana': {
+                'environment': {'VAR2': 'val2'},
+                'volumes': ['/vol2:/mount2'],
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['grafana']['environment']['VAR1'], 'val1')
+    assert_equals(result['services']['grafana']['environment']['VAR2'], 'val2')
+    assert_equals(len(result['services']['grafana']['volumes']), 2)
+    print("  [PASS] test_deep_merge_compose_overrides")
+
+# ============================================================================
+# merge_dependency_configs Tests
+# ============================================================================
+
+def test_merge_dependency_configs_basic():
+    """Test basic dependency config merging."""
+    existing = {'name': 'dep1', 'url': 'file:///path1'}
+    new = {'name': 'dep1', 'url': 'file:///path2'}
+    result = merge_dependency_configs(existing, new)
+    assert_equals(result['name'], 'dep1')
+    assert_equals(result['url'], 'file:///path1', "Existing URL should be preserved")
+    print("  [PASS] test_merge_dependency_configs_basic")
+
+def test_merge_dependency_configs_overrides():
+    """Test that compose_overrides are deep merged."""
+    existing = {
+        'name': 'k3s-apiserver',
+        'url': 'file:///path',
+        'compose_overrides': {
+            'services': {
+                'crd-loader': {
+                    'volumes': ['/path1:/crds/path1:ro'],
+                },
+            },
+        },
+    }
+    new = {
+        'name': 'k3s-apiserver',
+        'url': 'file:///path',
+        'compose_overrides': {
+            'services': {
+                'crd-loader': {
+                    'volumes': ['/path2:/crds/path2:ro'],
+                },
+            },
+        },
+    }
+    result = merge_dependency_configs(existing, new)
+    volumes = result['compose_overrides']['services']['crd-loader']['volumes']
+    assert_equals(len(volumes), 2, "CRD volumes should be merged")
+    print("  [PASS] test_merge_dependency_configs_overrides")
+
+def test_merge_dependency_configs_ignores_internal():
+    """Test that internal fields (_from_cli, etc.) are not copied from new."""
+    existing = {'name': 'dep1', 'url': 'file:///path'}
+    new = {'name': 'dep1', 'url': 'file:///path', '_from_cli': True, '_from_graph': 'other'}
+    result = merge_dependency_configs(existing, new)
+    assert_true('_from_cli' not in result or not result.get('_from_cli'), "Internal fields should not be copied")
+    print("  [PASS] test_merge_dependency_configs_ignores_internal")
+
+# ============================================================================
+# is_url Tests
+# ============================================================================
+
+def test_is_url_https():
+    """Test HTTPS URL detection."""
+    assert_true(is_url('https://github.com/org/repo.git'), "HTTPS should be detected")
+    print("  [PASS] test_is_url_https")
+
+def test_is_url_file():
+    """Test file:// URL detection."""
+    assert_true(is_url('file:///path/to/dir'), "file:// should be detected")
+    print("  [PASS] test_is_url_file")
+
+def test_is_url_git_ssh():
+    """Test git SSH URL detection."""
+    assert_true(is_url('git@github.com:org/repo.git'), "git@ should be detected")
+    print("  [PASS] test_is_url_git_ssh")
+
+def test_is_url_not_url():
+    """Test non-URL strings."""
+    assert_true(not is_url('plugin-name'), "Plain name should not be URL")
+    assert_true(not is_url('../relative/path'), "Relative path should not be URL")
+    assert_true(not is_url('/absolute/path'), "Absolute path should not be URL")
+    print("  [PASS] test_is_url_not_url")
+
+# ============================================================================
+# resolve_plugin_spec Tests
+# ============================================================================
+
+def test_resolve_plugin_spec_url():
+    """Test URL passthrough."""
+    result = resolve_plugin_spec('https://github.com/org/repo.git', '/base')
+    assert_equals(result['url'], 'https://github.com/org/repo.git')
+    assert_equals(result['name'], 'repo')
+    assert_true(result['_from_cli'])
+    print("  [PASS] test_resolve_plugin_spec_url")
+
+def test_resolve_plugin_spec_absolute():
+    """Test absolute path conversion to file:// URL."""
+    result = resolve_plugin_spec('/absolute/path/to/plugin', '/base')
+    assert_true(result['url'].startswith('file://'))
+    assert_in('/absolute/path/to/plugin', result['url'])
+    assert_equals(result['name'], 'plugin')
+    print("  [PASS] test_resolve_plugin_spec_absolute")
+
+def test_resolve_plugin_spec_relative():
+    """Test relative path resolution."""
+    result = resolve_plugin_spec('./subdir/plugin', '/base/dir')
+    assert_true(result['url'].startswith('file://'))
+    assert_equals(result['name'], 'plugin')
+    assert_equals(result['repo_path'], '.')
+    print("  [PASS] test_resolve_plugin_spec_relative")
+
+def test_resolve_plugin_spec_adjacent():
+    """Test adjacent directory (plain name) resolution."""
+    result = resolve_plugin_spec('sibling-plugin', '/base/my-plugin')
+    assert_true(result['url'].startswith('file://'))
+    assert_equals(result['name'], 'sibling-plugin')
+    print("  [PASS] test_resolve_plugin_spec_adjacent")
+
+# ============================================================================
+# collect_wire_when_rules Tests
+# ============================================================================
+
+def test_collect_wire_when_rules_empty():
+    """Test with no extensions exporting wire_when."""
+    deps = [
+        {'name': 'dep1', 'symbols': {}},
+        {'name': 'dep2', 'symbols': {'other_fn': lambda: None}},
+    ]
+    result = collect_wire_when_rules(deps)
+    assert_equals(len(result), 0, "Should be empty when no wire_when")
+    print("  [PASS] test_collect_wire_when_rules_empty")
+
+def test_collect_wire_when_rules_single():
+    """Test collecting rules from one extension."""
+    def mock_wire_when():
+        return {
+            'k3s-apiserver': {
+                'services': {
+                    'grafana': {'depends_on': ['k3s-apiserver']},
+                },
+            },
+        }
+    
+    deps = [
+        {'name': 'grafana', 'symbols': {'get_wire_when': mock_wire_when}},
+    ]
+    result = collect_wire_when_rules(deps)
+    assert_in('k3s-apiserver', result)
+    assert_equals(len(result['k3s-apiserver']), 1)
+    assert_equals(result['k3s-apiserver'][0]['source_dep'], 'grafana')
+    print("  [PASS] test_collect_wire_when_rules_single")
+
+def test_collect_wire_when_rules_multiple():
+    """Test collecting rules from multiple extensions."""
+    def wire_when_1():
+        return {'k3s-apiserver': {'services': {'svc1': {}}}}
+    
+    def wire_when_2():
+        return {'k3s-apiserver': {'services': {'svc2': {}}}}
+    
+    deps = [
+        {'name': 'ext1', 'symbols': {'get_wire_when': wire_when_1}},
+        {'name': 'ext2', 'symbols': {'get_wire_when': wire_when_2}},
+    ]
+    result = collect_wire_when_rules(deps)
+    assert_in('k3s-apiserver', result)
+    assert_equals(len(result['k3s-apiserver']), 2, "Should have rules from both extensions")
+    print("  [PASS] test_collect_wire_when_rules_multiple")
+
+# ============================================================================
+# apply_wire_when_rules Tests
+# ============================================================================
+
+def test_apply_wire_when_rules_adds_depends_on():
+    """Test that depends_on is added correctly."""
+    compose = {
+        'services': {
+            'grafana': {},
+        },
+    }
+    rules = {
+        'k3s-apiserver': [
+            {
+                'source_dep': 'grafana',
+                'rules': {
+                    'services': {
+                        'grafana': {'depends_on': ['k3s-apiserver']},
+                    },
+                },
+            },
+        ],
+    }
+    result = apply_wire_when_rules(compose, 'grafana', rules, ['grafana', 'k3s-apiserver'])
+    assert_in('k3s-apiserver', result['services']['grafana']['depends_on'])
+    print("  [PASS] test_apply_wire_when_rules_adds_depends_on")
+
+def test_apply_wire_when_rules_adds_volumes():
+    """Test that volumes are added correctly."""
+    compose = {
+        'services': {
+            'grafana': {'volumes': ['/existing:/mount']},
+        },
+    }
+    rules = {
+        'k3s-apiserver': [
+            {
+                'source_dep': 'grafana',
+                'rules': {
+                    'services': {
+                        'grafana': {'volumes': ['k3s-certs:/certs:ro']},
+                    },
+                },
+            },
+        ],
+    }
+    result = apply_wire_when_rules(compose, 'grafana', rules, ['grafana', 'k3s-apiserver'])
+    assert_equals(len(result['services']['grafana']['volumes']), 2)
+    print("  [PASS] test_apply_wire_when_rules_adds_volumes")
+
+def test_apply_wire_when_rules_adds_environment():
+    """Test that environment variables are added correctly."""
+    compose = {
+        'services': {
+            'grafana': {'environment': {'EXISTING': 'value'}},
+        },
+    }
+    rules = {
+        'k3s-apiserver': [
+            {
+                'source_dep': 'grafana',
+                'rules': {
+                    'services': {
+                        'grafana': {'environment': {'NEW_VAR': 'new_value'}},
+                    },
+                },
+            },
+        ],
+    }
+    result = apply_wire_when_rules(compose, 'grafana', rules, ['grafana', 'k3s-apiserver'])
+    assert_equals(result['services']['grafana']['environment']['EXISTING'], 'value')
+    assert_equals(result['services']['grafana']['environment']['NEW_VAR'], 'new_value')
+    print("  [PASS] test_apply_wire_when_rules_adds_environment")
+
+def test_apply_wire_when_rules_skips_when_trigger_missing():
+    """Test that rules don't apply when trigger dependency is missing."""
+    compose = {
+        'services': {
+            'grafana': {},
+        },
+    }
+    rules = {
+        'k3s-apiserver': [
+            {
+                'source_dep': 'grafana',
+                'rules': {
+                    'services': {
+                        'grafana': {'depends_on': ['k3s-apiserver']},
+                    },
+                },
+            },
+        ],
+    }
+    # k3s-apiserver is NOT in loaded_dep_names
+    result = apply_wire_when_rules(compose, 'grafana', rules, ['grafana', 'mysql'])
+    assert_true('depends_on' not in result['services']['grafana'], "Should not apply when trigger missing")
+    print("  [PASS] test_apply_wire_when_rules_skips_when_trigger_missing")
+
+def test_apply_wire_when_rules_creates_top_level_volumes():
+    """Test that named volumes are added to top-level volumes section."""
+    compose = {
+        'services': {
+            'grafana': {},
+        },
+    }
+    rules = {
+        'k3s-apiserver': [
+            {
+                'source_dep': 'grafana',
+                'rules': {
+                    'services': {
+                        'grafana': {'volumes': ['k3s-certs:/certs:ro']},
+                    },
+                },
+            },
+        ],
+    }
+    result = apply_wire_when_rules(compose, 'grafana', rules, ['grafana', 'k3s-apiserver'])
+    assert_in('volumes', result)
+    assert_in('k3s-certs', result['volumes'])
+    print("  [PASS] test_apply_wire_when_rules_creates_top_level_volumes")
+
+# ============================================================================
+# Run All Tests
+# ============================================================================
+
+def run_tests():
+    print("\n=== deep_merge Tests ===")
+    test_deep_merge_simple_dicts()
+    test_deep_merge_nested_dicts()
+    test_deep_merge_lists_concatenate()
+    test_deep_merge_lists_dedup()
+    test_deep_merge_does_not_mutate()
+    test_deep_merge_compose_overrides()
+    
+    print("\n=== merge_dependency_configs Tests ===")
+    test_merge_dependency_configs_basic()
+    test_merge_dependency_configs_overrides()
+    test_merge_dependency_configs_ignores_internal()
+    
+    print("\n=== is_url Tests ===")
+    test_is_url_https()
+    test_is_url_file()
+    test_is_url_git_ssh()
+    test_is_url_not_url()
+    
+    print("\n=== resolve_plugin_spec Tests ===")
+    test_resolve_plugin_spec_url()
+    test_resolve_plugin_spec_absolute()
+    test_resolve_plugin_spec_relative()
+    test_resolve_plugin_spec_adjacent()
+    
+    print("\n=== collect_wire_when_rules Tests ===")
+    test_collect_wire_when_rules_empty()
+    test_collect_wire_when_rules_single()
+    test_collect_wire_when_rules_multiple()
+    
+    print("\n=== apply_wire_when_rules Tests ===")
+    test_apply_wire_when_rules_adds_depends_on()
+    test_apply_wire_when_rules_adds_volumes()
+    test_apply_wire_when_rules_adds_environment()
+    test_apply_wire_when_rules_skips_when_trigger_missing()
+    test_apply_wire_when_rules_creates_top_level_volumes()
+    
+    print("\n" + "=" * 50)
+    print("All tests passed!")
+    print("=" * 50)
+
+# Run tests
+run_tests()
+
+# Dummy resource to satisfy tilt ci (which expects at least one resource)
+local_resource('tests', cmd='echo "Tests completed"', auto_init=False)
+

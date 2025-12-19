@@ -4,8 +4,10 @@
 #
 # Design Principle:
 #   Any plugin can be the orchestrator (composer). The result should be the same
-#   regardless of which plugin initiates the composition. This is achieved through
-#   declarative wiring rules defined in extensions, not imperative callbacks.
+#   regardless of which plugin initiates the composition. This is achieved through:
+#   - Declarative wiring rules in extensions (get_wire_when)
+#   - Dependency graphs that can be merged (get_dependency_graph)
+#   - compose_overrides that are deep-merged when dependencies overlap
 #
 # Usage:
 #   load('ext://compose_composer', 'generate_master_compose', 'parse_cli_plugins')
@@ -27,9 +29,11 @@
 #   compose_overrides: dict        - Static overrides merged into compose (optional)
 #
 # Extension exports:
-#   get_compose_path() -> str      - Returns path to compose file (required)
-#   get_wire_when() -> dict        - Conditional wiring rules (optional)
-#   get_provides() -> dict         - What this extension provides (optional, for docs)
+#   get_compose_path() -> str         - Returns path to compose file (required)
+#   get_wire_when() -> dict           - Conditional wiring rules (optional)
+#   get_provides() -> dict            - What this extension provides (optional, for docs)
+#   get_dependency_graph() -> dict    - Dependencies this extension brings (optional)
+#                                       Returns: {dependencies: [...], compose_path: str}
 
 # ============================================================================
 # CLI Argument Parsing
@@ -99,23 +103,134 @@ def parse_cli_plugins(tiltfile_dir):
     return deps
 
 # ============================================================================
+# Dependency Graph Expansion and Merging
+# ============================================================================
+
+def _expand_dependency_graphs(dependencies, loaded_extensions):
+    """
+    Expand dependencies by loading CLI plugins' dependency graphs.
+    
+    When a CLI plugin exports get_dependency_graph(), its dependencies are
+    merged into the main list. This allows plugins to bring their own
+    dependency trees.
+    
+    Args:
+        dependencies: Initial list of dependencies
+        loaded_extensions: Dict tracking loaded extensions (mutable)
+    
+    Returns:
+        Expanded list with merged dependencies (deduplicated by name)
+    """
+    expanded = []
+    seen_names = {}
+    
+    # First pass: collect all dependencies including those from CLI plugin graphs
+    all_deps = []
+    
+    for dep in dependencies:
+        all_deps.append(dep)
+        
+        # If this is a CLI plugin, we need to load it first to check for get_dependency_graph
+        if dep.get('_from_cli'):
+            # Temporarily load the extension to check for dependency graph
+            _load_extension(dep, loaded_extensions)
+            symbols = dep.get('symbols', {})
+            get_dep_graph = symbols.get('get_dependency_graph')
+            
+            if get_dep_graph:
+                graph = get_dep_graph()
+                graph_deps = graph.get('dependencies', [])
+                
+                print("  [graph] " + dep['name'] + " brings " + str(len(graph_deps)) + " dependencies")
+                
+                for sub_dep in graph_deps:
+                    # Mark the source so we can trace where it came from
+                    sub_dep['_from_graph'] = dep['name']
+                    all_deps.append(sub_dep)
+    
+    # Second pass: deduplicate by name, merging compose_overrides
+    for dep in all_deps:
+        name = dep['name']
+        
+        if name in seen_names:
+            # Merge with existing
+            existing = seen_names[name]
+            existing = _merge_dependency_configs(existing, dep)
+            seen_names[name] = existing
+            
+            # Update in expanded list
+            for i, e in enumerate(expanded):
+                if e['name'] == name:
+                    expanded[i] = existing
+                    break
+        else:
+            seen_names[name] = dep
+            expanded.append(dep)
+    
+    return expanded
+
+def _merge_dependency_configs(existing, new):
+    """
+    Merge two dependency configs with the same name.
+    
+    - compose_overrides are deep-merged
+    - Other fields from 'new' override 'existing' (except internal fields)
+    """
+    result = {}
+    
+    # Copy existing fields
+    for key in existing:
+        result[key] = existing[key]
+    
+    # Merge/override with new fields (except internal tracking fields)
+    for key in new:
+        if key.startswith('_'):
+            continue  # Skip internal fields like _from_cli, _from_graph
+        
+        if key == 'compose_overrides':
+            # Deep merge compose_overrides
+            existing_overrides = result.get('compose_overrides', {})
+            new_overrides = new.get('compose_overrides', {})
+            result['compose_overrides'] = _deep_merge(existing_overrides, new_overrides)
+        elif key not in result:
+            result[key] = new[key]
+    
+    return result
+
+# ============================================================================
 # Extension Loading
 # ============================================================================
 
-def _load_extension(dep):
+def _load_extension(dep, loaded_extensions):
     """Load a Tiltfile extension and populate its symbols."""
     name = dep['name']
+    
+    # Check if already loaded (either by us or by the orchestrator loading helpers)
+    if name in loaded_extensions:
+        dep['symbols'] = loaded_extensions[name]
+        return dep
+    
+    # Check if symbols already exist (loaded by orchestrator before calling generate_master_compose)
+    if dep.get('symbols'):
+        loaded_extensions[name] = dep['symbols']
+        return dep
+    
     url = dep['url']
     ref = dep.get('ref', 'main')
     repo_path = dep.get('repo_path', name)
     
-    if url.startswith('file://'):
-        v1alpha1.extension_repo(name=name, url=url)
-    else:
-        v1alpha1.extension_repo(name=name, url=url, ref=ref)
+    # Use a unique repo name to avoid conflicts with orchestrator's registrations
+    repo_name = 'cc-' + name
     
-    v1alpha1.extension(name=name, repo_name=name, repo_path=repo_path)
+    # Register and load
+    if url.startswith('file://'):
+        v1alpha1.extension_repo(name=repo_name, url=url)
+    else:
+        v1alpha1.extension_repo(name=repo_name, url=url, ref=ref)
+    
+    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
     dep['symbols'] = load_dynamic('ext://' + name)
+    loaded_extensions[name] = dep['symbols']
     return dep
 
 def _get_compose_path_from_extension(dep):
@@ -376,8 +491,10 @@ def generate_master_compose(
     Generate master compose file by assembling dependencies.
     
     This function is symmetric - any plugin can be the orchestrator and
-    the result will be the same, because wiring rules are defined
-    declaratively in extensions via get_wire_when().
+    the result will be the same, because:
+    - Wiring rules are defined declaratively in extensions (get_wire_when)
+    - Dependency graphs are expanded and merged (get_dependency_graph)
+    - compose_overrides are deep-merged when dependencies overlap
     
     Args:
         dependencies: List of dependency dicts. Each must have:
@@ -393,6 +510,32 @@ def generate_master_compose(
     """
     staging_dir = staging_dir if staging_dir else os.path.abspath('.compose-stage')
     
+    # Track loaded extensions to avoid re-registration
+    # This dict is passed through all phases and mutated as extensions are loaded
+    loaded_extensions = {}
+    
+    # Pre-populate with any extensions that were already loaded by the orchestrator
+    for dep in dependencies:
+        if dep.get('symbols'):
+            loaded_extensions[dep['name']] = dep['symbols']
+    
+    # ========================================================================
+    # Phase 0: Expand dependency graphs from CLI plugins
+    # ========================================================================
+    # CLI plugins may export get_dependency_graph() which brings their own
+    # dependencies. These are merged with the orchestrator's dependencies,
+    # deduplicating by name and merging compose_overrides.
+    print("\nExpanding dependency graphs:")
+    dependencies = _expand_dependency_graphs(dependencies, loaded_extensions)
+    print("  Total dependencies after expansion: " + str(len(dependencies)))
+    for dep in dependencies:
+        source = ""
+        if dep.get('_from_cli'):
+            source = " (CLI)"
+        elif dep.get('_from_graph'):
+            source = " (from " + dep['_from_graph'] + ")"
+        print("    - " + dep['name'] + source)
+    
     # ========================================================================
     # Phase 1: Load all extensions
     # ========================================================================
@@ -406,8 +549,12 @@ def generate_master_compose(
         if 'url' not in dep:
             fail("Dependency " + dep['name'] + " must have 'url' field")
         
-        print("  Loading: " + dep['name'])
-        _load_extension(dep)
+        # Skip if already loaded during graph expansion or by orchestrator
+        if dep.get('symbols'):
+            print("  Already loaded: " + dep['name'])
+        else:
+            print("  Loading: " + dep['name'])
+            _load_extension(dep, loaded_extensions)
         
         loaded_deps.append(dep)
         loaded_dep_names.append(dep['name'])
@@ -443,6 +590,7 @@ def generate_master_compose(
         original_content = _deep_copy(content)
         
         # Apply static compose_overrides from dependency definition
+        # Note: CRD mounts come through compose_overrides via register_crds() helper
         overrides = dep.get('compose_overrides')
         if overrides:
             print("    -> Applying compose_overrides")
@@ -493,3 +641,20 @@ def generate_master_compose(
         print("  - local: " + path)
     
     return {'include': includes}
+
+# ============================================================================
+# Test Exports
+# ============================================================================
+# These are exported for unit testing. Not intended for general use.
+
+def test_exports():
+    """Returns internal functions for testing."""
+    return {
+        'deep_merge': _deep_merge,
+        'deep_copy': _deep_copy,
+        'merge_dependency_configs': _merge_dependency_configs,
+        'collect_wire_when_rules': _collect_wire_when_rules,
+        'apply_wire_when_rules': _apply_wire_when_rules,
+        'is_url': _is_url,
+        'resolve_plugin_spec': _resolve_plugin_spec,
+    }
