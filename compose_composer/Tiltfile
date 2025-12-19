@@ -2,12 +2,17 @@
 # Dynamically assembles docker-compose files using the `include` directive
 # to preserve relative path resolution for each component.
 #
+# Design Principle:
+#   Any plugin can be the orchestrator (composer). The result should be the same
+#   regardless of which plugin initiates the composition. This is achieved through
+#   declarative wiring rules defined in extensions, not imperative callbacks.
+#
 # Usage:
 #   load('ext://compose_composer', 'generate_master_compose', 'parse_cli_plugins')
 #   
 #   cli_plugins = parse_cli_plugins(os.path.dirname(__file__))
 #   dependencies = core_dependencies + cli_plugins
-#   master_compose = generate_master_compose(dependencies, callbacks={...})
+#   master_compose = generate_master_compose(dependencies)
 #   docker_compose(encode_yaml(master_compose))
 #
 # CLI Usage:
@@ -19,45 +24,12 @@
 #   ref: str                       - Git ref for https:// URLs (default: 'main')
 #   repo_path: str                 - Path within repo (default: name)
 #   get_compose_path_function: str - Function to call for compose path (default: 'get_compose_path')
-#   compose_overrides: dict        - Static overrides merged into compose before callbacks (optional)
-#                                    Uses deep merge - nested dicts are merged, lists replaced
+#   compose_overrides: dict        - Static overrides merged into compose (optional)
 #
-# Callback Lifecycle (Action-Oriented):
-#   FILTER → IMPORT → TRANSFORM → MERGE → EMIT
-#
-# Callbacks:
-#   Callbacks allow dynamic modification of compose files during assembly.
-#   Two sources of callbacks:
-#     1. Explicit callbacks passed to generate_master_compose()
-#     2. Convention-based callbacks exported by extension Tiltfiles
-#
-#   Supported callbacks:
-#     on_filter_dependency(dep, context) -> dep|None
-#       - Called before loading each dependency
-#       - Return modified dep, or None to exclude
-#
-#     on_import_extension(dep, symbols, context)
-#       - Called after extension symbols are loaded
-#       - Informational only, no return value used
-#
-#     on_transform_compose(dep, compose_yaml, context) -> compose_yaml
-#       - Called for each compose file after loading and static overrides
-#       - Can modify the compose content
-#       - Return modified yaml or None for no changes
-#
-#     on_merge_composes(all_composes, context) -> all_composes
-#       - Called before final assembly with all resolved composes
-#       - Can add/remove/modify any compose entry
-#       - Return modified list or None for no changes
-#
-#     on_emit_master(master_compose, context) -> master_compose
-#       - Called after master compose is generated
-#       - Can modify the final output
-#       - Return modified compose or None for no changes
-#
-# Callback ordering:
-#   1. Originating Tiltfile callbacks run first
-#   2. Extension callbacks run in dependency load order
+# Extension exports:
+#   get_compose_path() -> str      - Returns path to compose file (required)
+#   get_wire_when() -> dict        - Conditional wiring rules (optional)
+#   get_provides() -> dict         - What this extension provides (optional, for docs)
 
 # ============================================================================
 # CLI Argument Parsing
@@ -168,7 +140,8 @@ def _deep_merge(base, override):
     """
     Deep merge override into base.
     - Dicts are merged recursively
-    - Lists and other values are replaced
+    - Lists are concatenated (for volumes, depends_on, etc.)
+    - Other values are replaced
     
     Returns a new dict (does not modify base).
     """
@@ -183,163 +156,180 @@ def _deep_merge(base, override):
     
     # Merge/override with keys from override
     for key in override:
-        if key in result and type(result[key]) == 'dict' and type(override[key]) == 'dict':
-            result[key] = _deep_merge(result[key], override[key])
+        if key in result:
+            if type(result[key]) == 'dict' and type(override[key]) == 'dict':
+                result[key] = _deep_merge(result[key], override[key])
+            elif type(result[key]) == 'list' and type(override[key]) == 'list':
+                # Concatenate lists, avoiding duplicates for simple values
+                merged = list(result[key])
+                for item in override[key]:
+                    if item not in merged:
+                        merged.append(item)
+                result[key] = merged
+            else:
+                result[key] = override[key]
         else:
             result[key] = override[key]
     
     return result
 
+def _deep_copy(obj):
+    """Create a deep copy of a dict/list structure using YAML round-trip."""
+    return decode_yaml(encode_yaml(obj))
+
 # ============================================================================
-# Callback Infrastructure
+# Declarative Wiring (wire_when)
 # ============================================================================
 
-# Supported callback event names (action-oriented)
-_CALLBACK_EVENTS = [
-    'on_filter_dependency',
-    'on_import_extension',
-    'on_transform_compose',
-    'on_merge_composes',
-    'on_emit_master',
-]
-
-def _collect_extension_callbacks(loaded_deps):
-    """Collect callback functions from loaded extensions."""
-    callbacks = {event: [] for event in _CALLBACK_EVENTS}
+def _collect_wire_when_rules(loaded_deps):
+    """
+    Collect wire_when rules from all loaded extensions.
+    
+    Returns a dict: {trigger_dep_name: [{source_dep, rules}, ...]}
+    """
+    all_rules = {}
     
     for dep in loaded_deps:
         symbols = dep.get('symbols', {})
-        for event in _CALLBACK_EVENTS:
-            fn = symbols.get(event)
-            if fn:
-                callbacks[event].append({
-                    'fn': fn,
-                    'source': dep['name'],
-                })
+        get_wire_when = symbols.get('get_wire_when')
+        
+        if not get_wire_when:
+            continue
+        
+        wire_when = get_wire_when()
+        
+        for trigger_dep_name, rules in wire_when.items():
+            if trigger_dep_name not in all_rules:
+                all_rules[trigger_dep_name] = []
+            
+            all_rules[trigger_dep_name].append({
+                'source_dep': dep['name'],
+                'rules': rules,
+            })
     
-    return callbacks
+    return all_rules
 
-def _invoke_filter_dependency(dep, context, extension_callbacks, originating_callbacks):
+def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names):
     """
-    Invoke on_filter_dependency callbacks.
-    Any callback returning None excludes the dependency.
+    Apply wire_when rules to a compose file.
+    
+    Args:
+        compose_yaml: The compose content to modify
+        dep_name: Name of the dependency being processed
+        wire_when_rules: All collected wire_when rules
+        loaded_dep_names: List of all loaded dependency names
     
     Returns:
-        The filtered dep, or None to exclude
+        Modified compose_yaml
     """
-    result = dep
+    modified = False
     
-    # Originating callback first
-    orig_fn = originating_callbacks.get('on_filter_dependency')
-    if orig_fn:
-        result = orig_fn(result, context)
-        if result == None:
-            return None
+    # Check each trigger dependency
+    for trigger_dep, rule_sets in wire_when_rules.items():
+        # Only apply if the trigger dependency is loaded
+        if trigger_dep not in loaded_dep_names:
+            continue
+        
+        # Apply each rule set from extensions that defined rules for this trigger
+        for rule_set in rule_sets:
+            rules = rule_set['rules']
+            source = rule_set['source_dep']
+            
+            # Get service rules
+            service_rules = rules.get('services', {})
+            
+            for target_service, service_mods in service_rules.items():
+                # Only apply to services in this compose file
+                if target_service not in compose_yaml.get('services', {}):
+                    continue
+                
+                svc = compose_yaml['services'][target_service]
+                
+                # Apply depends_on
+                if 'depends_on' in service_mods:
+                    existing = svc.get('depends_on', [])
+                    if type(existing) == 'list':
+                        for dep in service_mods['depends_on']:
+                            if dep not in existing:
+                                existing.append(dep)
+                        svc['depends_on'] = existing
+                    else:
+                        # Dict format
+                        for dep in service_mods['depends_on']:
+                            if dep not in existing:
+                                existing[dep] = {'condition': 'service_started'}
+                        svc['depends_on'] = existing
+                    modified = True
+                
+                # Apply volumes
+                if 'volumes' in service_mods:
+                    existing = svc.get('volumes', [])
+                    for vol in service_mods['volumes']:
+                        # Extract volume name for top-level declaration
+                        vol_name = vol.split(':')[0] if ':' in vol else None
+                        
+                        # Check for duplicate mount points
+                        mount_point = vol.split(':')[1] if ':' in vol else vol
+                        already_mounted = False
+                        for v in existing:
+                            if mount_point in str(v):
+                                already_mounted = True
+                                break
+                        if not already_mounted:
+                            existing.append(vol)
+                        
+                        # Always ensure named volumes are in top-level volumes section
+                        # Named volumes are in format "volume_name:/path" (not starting with / or .)
+                        if vol_name and not vol_name.startswith('/') and not vol_name.startswith('.'):
+                            if 'volumes' not in compose_yaml:
+                                compose_yaml['volumes'] = {}
+                            if vol_name not in compose_yaml['volumes']:
+                                # Add as empty dict (Docker Compose default)
+                                compose_yaml['volumes'][vol_name] = None
+                    
+                    svc['volumes'] = existing
+                    modified = True
+                
+                # Apply environment
+                if 'environment' in service_mods:
+                    existing = svc.get('environment', {})
+                    if type(existing) == 'list':
+                        # Convert list format to dict
+                        env_dict = {}
+                        for e in existing:
+                            if '=' in str(e):
+                                parts = str(e).split('=', 1)
+                                env_dict[parts[0]] = parts[1]
+                        existing = env_dict
+                    for k, v in service_mods['environment'].items():
+                        existing[k] = v
+                    svc['environment'] = existing
+                    modified = True
+                
+                # Apply labels
+                if 'labels' in service_mods:
+                    existing = svc.get('labels', {})
+                    if type(existing) == 'list':
+                        # Convert list format to dict
+                        labels_dict = {}
+                        for label in existing:
+                            if '=' in str(label):
+                                parts = str(label).split('=', 1)
+                                labels_dict[parts[0]] = parts[1]
+                        existing = labels_dict
+                    for k, v in service_mods['labels'].items():
+                        existing[k] = v
+                    svc['labels'] = existing
+                    modified = True
+                
+                if modified:
+                    print("    [wire_when] " + source + " wired " + target_service + " for " + trigger_dep)
     
-    # Extension callbacks in load order
-    for cb in extension_callbacks.get('on_filter_dependency', []):
-        result = cb['fn'](result, context)
-        if result == None:
-            return None
-    
-    return result
-
-def _invoke_import_extension(dep, symbols, context, extension_callbacks, originating_callbacks):
-    """
-    Invoke on_import_extension callbacks.
-    Informational only - return values ignored.
-    """
-    # Originating callback first
-    orig_fn = originating_callbacks.get('on_import_extension')
-    if orig_fn:
-        orig_fn(dep, symbols, context)
-    
-    # Extension callbacks in load order
-    for cb in extension_callbacks.get('on_import_extension', []):
-        cb['fn'](dep, symbols, context)
-
-def _invoke_transform_compose(dep, compose_yaml, context, extension_callbacks, originating_callbacks):
-    """
-    Invoke on_transform_compose callbacks, chaining results.
-    Originating callbacks run first, then extension callbacks.
-    
-    Returns:
-        The final modified compose_yaml after all callbacks
-    """
-    result = compose_yaml
-    
-    # Originating callback first
-    orig_fn = originating_callbacks.get('on_transform_compose')
-    if orig_fn:
-        new_result = orig_fn(dep, result, context)
-        if new_result != None:
-            result = new_result
-    
-    # Extension callbacks in load order
-    for cb in extension_callbacks.get('on_transform_compose', []):
-        new_result = cb['fn'](dep, result, context)
-        if new_result != None:
-            result = new_result
-    
-    return result
-
-def _invoke_merge_composes(all_composes, context, extension_callbacks, originating_callbacks):
-    """
-    Invoke on_merge_composes callbacks, chaining results.
-    Originating callbacks run first, then extension callbacks.
-    
-    Returns:
-        The final modified all_composes list after all callbacks
-    """
-    result = all_composes
-    
-    # Originating callback first
-    orig_fn = originating_callbacks.get('on_merge_composes')
-    if orig_fn:
-        new_result = orig_fn(result, context)
-        if new_result != None:
-            result = new_result
-    
-    # Extension callbacks in load order
-    for cb in extension_callbacks.get('on_merge_composes', []):
-        new_result = cb['fn'](result, context)
-        if new_result != None:
-            result = new_result
-    
-    return result
-
-def _invoke_emit_master(master_compose, context, extension_callbacks, originating_callbacks):
-    """
-    Invoke on_emit_master callbacks, chaining results.
-    Originating callbacks run first, then extension callbacks.
-    
-    Returns:
-        The final master compose after all callbacks
-    """
-    result = master_compose
-    
-    # Originating callback first
-    orig_fn = originating_callbacks.get('on_emit_master')
-    if orig_fn:
-        new_result = orig_fn(result, context)
-        if new_result != None:
-            result = new_result
-    
-    # Extension callbacks in load order
-    for cb in extension_callbacks.get('on_emit_master', []):
-        new_result = cb['fn'](result, context)
-        if new_result != None:
-            result = new_result
-    
-    return result
+    return compose_yaml
 
 # ============================================================================
 # Compose File Staging
 # ============================================================================
-
-def _deep_copy(obj):
-    """Create a deep copy of a dict/list structure using YAML round-trip."""
-    return decode_yaml(encode_yaml(obj))
 
 def _stage_compose_file(dep_name, content, staging_dir):
     """
@@ -380,111 +370,69 @@ def _generate_include_entry(entry):
 def generate_master_compose(
     dependencies,
     local_compose_paths=[],
-    callbacks={},
     staging_dir=None,
 ):
     """
-    Generate master compose file with callback support.
+    Generate master compose file by assembling dependencies.
+    
+    This function is symmetric - any plugin can be the orchestrator and
+    the result will be the same, because wiring rules are defined
+    declaratively in extensions via get_wire_when().
     
     Args:
         dependencies: List of dependency dicts. Each must have:
             - name: str (required)
             - url: str (required)
-            - compose_overrides: dict (optional) - merged before callbacks
+            - compose_overrides: dict (optional) - static overrides
         local_compose_paths: Additional local compose file paths to include
-        callbacks: Dict of callback functions from orchestrating Tiltfile:
-            {
-                'on_filter_dependency': fn(dep, context) -> dep|None,
-                'on_import_extension': fn(dep, symbols, context),
-                'on_transform_compose': fn(dep, compose_yaml, context) -> yaml,
-                'on_merge_composes': fn(all_composes, context) -> composes,
-                'on_emit_master': fn(master_compose, context) -> compose,
-            }
         staging_dir: Directory for modified compose files.
                      Defaults to .compose-stage/ in current working directory.
     
     Returns:
         Dict with 'include' key for docker_compose()
     """
-    # Initialize context
-    all_dep_names = [d['name'] for d in dependencies]
-    cli_dep_names = [d['name'] for d in dependencies if d.get('_from_cli')]
-    
-    context = {
-        'phase': 'filter',
-        'all_deps': dependencies,
-        'all_dep_names': all_dep_names,
-        'cli_dep_names': cli_dep_names,
-        'loaded_deps': [],
-        'loaded_dep_names': [],
-        'loaded_symbols': {},
-        'resolved_composes': [],
-        'staging_dir': staging_dir if staging_dir else os.path.abspath('.compose-stage'),
-    }
-    
-    # We need to collect extension callbacks incrementally as extensions load
-    # Initially empty - will be populated as we load extensions
-    extension_callbacks = {event: [] for event in _CALLBACK_EVENTS}
+    staging_dir = staging_dir if staging_dir else os.path.abspath('.compose-stage')
     
     # ========================================================================
-    # Phase 1: FILTER - Filter dependencies before loading
+    # Phase 1: Load all extensions
     # ========================================================================
-    print("\nFiltering dependencies:")
-    context['phase'] = 'filter'
+    print("\nLoading extensions:")
     
-    filtered_deps = []
+    loaded_deps = []
+    loaded_dep_names = []
+    loaded_symbols = {}
+    
     for dep in dependencies:
         if 'url' not in dep:
             fail("Dependency " + dep['name'] + " must have 'url' field")
         
-        # Invoke on_filter_dependency (only originating callbacks at this point)
-        filtered_dep = _invoke_filter_dependency(dep, context, extension_callbacks, callbacks)
-        
-        if filtered_dep == None:
-            print("  Filtered out: " + dep['name'])
-        else:
-            filtered_deps.append(filtered_dep)
-            print("  Included: " + filtered_dep['name'])
-    
-    # Update context with filtered deps
-    context['all_deps'] = filtered_deps
-    context['all_dep_names'] = [d['name'] for d in filtered_deps]
-    
-    # ========================================================================
-    # Phase 2: IMPORT - Load extensions and collect symbols
-    # ========================================================================
-    print("\nImporting extensions:")
-    context['phase'] = 'import'
-    
-    for dep in filtered_deps:
         print("  Loading: " + dep['name'])
         _load_extension(dep)
         
-        symbols = dep.get('symbols', {})
-        context['loaded_deps'].append(dep)
-        context['loaded_dep_names'].append(dep['name'])
-        context['loaded_symbols'][dep['name']] = symbols
-        
-        # Collect callbacks from this extension
-        for event in _CALLBACK_EVENTS:
-            fn = symbols.get(event)
-            if fn:
-                extension_callbacks[event].append({
-                    'fn': fn,
-                    'source': dep['name'],
-                })
-        
-        # Invoke on_import_extension callbacks
-        _invoke_import_extension(dep, symbols, context, extension_callbacks, callbacks)
+        loaded_deps.append(dep)
+        loaded_dep_names.append(dep['name'])
+        loaded_symbols[dep['name']] = dep.get('symbols', {})
     
     # ========================================================================
-    # Phase 3: TRANSFORM - Resolve and transform compose files
+    # Phase 2: Collect wire_when rules from all extensions
     # ========================================================================
-    print("\nTransforming compose files:")
-    context['phase'] = 'transform'
+    print("\nCollecting wiring rules:")
+    wire_when_rules = _collect_wire_when_rules(loaded_deps)
+    
+    for trigger, rule_sets in wire_when_rules.items():
+        sources = [rs['source_dep'] for rs in rule_sets]
+        print("  " + trigger + " triggers: " + ", ".join(sources))
+    
+    if not wire_when_rules:
+        print("  (no wire_when rules defined)")
+    
+    # ========================================================================
+    # Phase 3: Resolve and transform compose files
+    # ========================================================================
+    print("\nAssembling compose files:")
     resolved = []
     
-    for dep in filtered_deps:
+    for dep in loaded_deps:
         compose_path = _get_compose_path_from_extension(dep)
         project_dir = os.path.dirname(compose_path)
         
@@ -492,14 +440,16 @@ def generate_master_compose(
         
         # Read the compose file content
         content = read_yaml(compose_path)
+        original_content = _deep_copy(content)
         
-        # Apply static compose_overrides BEFORE callbacks
+        # Apply static compose_overrides from dependency definition
         overrides = dep.get('compose_overrides')
         if overrides:
             print("    -> Applying compose_overrides")
             content = _deep_merge(content, overrides)
         
-        original_content = _deep_copy(content)
+        # Apply wire_when rules
+        content = _apply_wire_when_rules(content, dep['name'], wire_when_rules, loaded_dep_names)
         
         entry = {
             'dep': dep,
@@ -511,50 +461,22 @@ def generate_master_compose(
             'staged_path': None,
         }
         
-        # Invoke on_transform_compose callbacks
-        context['current_project_directory'] = project_dir
-        new_content = _invoke_transform_compose(
-            dep, content, context, extension_callbacks, callbacks
-        )
-        entry['content'] = new_content
-        
-        # Check if content was modified (from original after overrides)
+        # Check if content was modified
         if encode_yaml(entry['content']) != encode_yaml(entry['original_content']):
             entry['modified'] = True
             entry['staged_path'] = _stage_compose_file(
                 dep['name'],
                 entry['content'],
-                context['staging_dir'],
+                staging_dir,
             )
-            print("    -> Transformed, staged to: " + entry['staged_path'])
-        
-        # Also mark as modified if overrides were applied (need staging for project_directory)
-        if overrides and not entry['modified']:
-            entry['modified'] = True
-            entry['staged_path'] = _stage_compose_file(
-                dep['name'],
-                entry['content'],
-                context['staging_dir'],
-            )
-            print("    -> Overrides applied, staged to: " + entry['staged_path'])
+            print("    -> Modified, staged to: " + entry['staged_path'])
         
         resolved.append(entry)
-        context['resolved_composes'] = resolved
     
     # ========================================================================
-    # Phase 4: MERGE - Final modifications before assembly
+    # Phase 4: Generate include list
     # ========================================================================
-    print("\nMerging composes:")
-    context['phase'] = 'merge'
-    resolved = _invoke_merge_composes(
-        resolved, context, extension_callbacks, callbacks
-    )
-    
-    # ========================================================================
-    # Phase 5: EMIT - Generate final master compose
-    # ========================================================================
-    print("\nEmitting master compose:")
-    context['phase'] = 'emit'
+    print("\nGenerated master compose:")
     includes = []
     
     for entry in resolved:
@@ -570,11 +492,4 @@ def generate_master_compose(
         includes.append(path)
         print("  - local: " + path)
     
-    master_compose = {'include': includes}
-    
-    # Invoke on_emit_master callbacks
-    master_compose = _invoke_emit_master(
-        master_compose, context, extension_callbacks, callbacks
-    )
-    
-    return master_compose
+    return {'include': includes}
