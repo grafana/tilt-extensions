@@ -10,7 +10,7 @@
 #   - compose_overrides that are deep-merged when dependencies overlap
 #
 # Usage:
-#   load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
+#   load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_docker_compose')
 #   
 #   k3s = cc_dependency(name='k3s-apiserver', url='...')
 #   mysql = cc_dependency(name='mysql', url='...', profiles=['dev', 'full'])  # Only in dev/full
@@ -18,7 +18,7 @@
 #       return cc_local_compose('my-plugin', os.path.dirname(__file__) + '/compose.yaml', k3s, mysql)
 #   
 #   master_compose = cc_generate_master_compose(cc_get_plugin(), cc_parse_cli_plugins(...))
-#   docker_compose(encode_yaml(master_compose))
+#   cc_docker_compose(encode_yaml(master_compose))  # Automatically passes COMPOSE_PROFILES
 #
 # CLI Usage:
 #   tilt up -- plugin-name ../relative/path
@@ -91,6 +91,37 @@ def cc_get_active_profiles():
         # Pass to docker compose if using native profiles in compose files
     """
     return _active_profiles
+
+def cc_docker_compose(master_compose, **kwargs):
+    """
+    Invoke docker_compose() with active profiles automatically set via environment.
+    
+    This is a convenience wrapper that sets COMPOSE_PROFILES environment variable
+    based on cc_get_active_profiles(), allowing docker-compose to respect the
+    unified profile model.
+    
+    Note: This sets the environment variable in the Tilt process context using
+    os.putenv(), which docker-compose will inherit when invoked.
+    
+    Args:
+        master_compose: The master compose dict from cc_generate_master_compose()
+        **kwargs: Additional arguments passed to docker_compose()
+    
+    Example:
+        master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
+        cc_docker_compose(encode_yaml(master))
+    """
+    active = cc_get_active_profiles()
+    
+    # Set COMPOSE_PROFILES environment variable for docker-compose
+    # This must be set in the process environment, not passed to docker_compose()
+    if active:
+        # Docker Compose expects comma-separated profile names
+        profiles_str = ','.join(active)
+        os.putenv('COMPOSE_PROFILES', profiles_str)
+        print("[compose_composer] Setting COMPOSE_PROFILES=" + profiles_str)
+    
+    docker_compose(master_compose, **kwargs)
 
 def _is_dep_included_by_profile(dep_profiles, active_profiles):
     """

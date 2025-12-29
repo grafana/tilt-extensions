@@ -78,6 +78,52 @@ CC_PROFILES=dev,debug tilt up
 CC_PROFILES=dev tilt up -- --profile=staging plugin-two
 ```
 
+#### Unified Profile Model
+
+compose_composer supports a **unified profile model** where profiles control both:
+1. **Which dependencies to load** (compose_composer filtering)
+2. **Which services to start within those dependencies** (docker-compose profiles)
+
+**Defining profiles on dependencies:**
+
+```python
+# Only loaded when 'core' or 'full' profile is active
+mysql = cc_dependency(
+    name='mysql',
+    url=DEVENV_URL,
+    profiles=['core', 'full'],
+)
+
+# Always loaded (no profile restrictions)
+grafana = cc_dependency(name='grafana', url=DEVENV_URL)
+```
+
+**Using profiles in compose files:**
+
+```yaml
+services:
+  db:
+    profiles: ['core', 'full']  # Only starts in these profiles
+    image: mysql:8
+  
+  api:
+    # No profile = always starts
+    image: my-api
+```
+
+**Automatic COMPOSE_PROFILES integration:**
+
+Use `cc_docker_compose()` instead of `docker_compose()` to automatically pass active profiles:
+
+```python
+load('ext://compose_composer', 'cc_docker_compose')
+
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
+    # Automatically sets COMPOSE_PROFILES environment variable
+    cc_docker_compose(encode_yaml(master))
+```
+
 ## Core Concepts
 
 ### The Unified Dependency Tree
