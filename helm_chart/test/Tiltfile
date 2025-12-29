@@ -1,0 +1,47 @@
+# Test file for helm_chart extension
+# Usage: tilt up (or tilt ci for CI)
+
+# Option 1: Load from extension repo (if configured)
+# load('ext://helm_chart', 'ensure_helm_chart')
+
+# Option 2: Load directly from local path (for testing)
+load('../Tiltfile', 'ensure_helm_chart')
+
+# Example: Download Redis chart from Bitnami
+redis_chart_path = ensure_helm_chart(
+    repo_name='bitnami',
+    repo_url='https://charts.bitnami.com/bitnami',
+    chart_name='redis',
+    chart_version='20.3.0',
+    charts_path='./charts',
+    update_repo=True
+)
+
+print('Redis chart downloaded to: %s' % redis_chart_path)
+
+# Example: Download Grafana chart
+grafana_chart_path = ensure_helm_chart(
+    repo_name='grafana',
+    repo_url='https://grafana.github.io/helm-charts',
+    chart_name='grafana',
+    chart_version='7.3.7',
+    charts_path='./charts',
+    update_repo=False  # Skip repo update for faster testing
+)
+
+print('Grafana chart downloaded to: %s' % grafana_chart_path)
+
+# Verify charts exist
+if os.path.exists(os.path.join(redis_chart_path, 'Chart.yaml')):
+    print('✓ Redis chart verified')
+else:
+    fail('Redis chart not found')
+
+if os.path.exists(os.path.join(grafana_chart_path, 'Chart.yaml')):
+    print('✓ Grafana chart verified')
+else:
+    fail('Grafana chart not found')
+
+# Without at least one resource, `tilt ci` exits with code 1
+local_resource('test_success', 'echo ✨ helm_chart extension test succeeded')
+

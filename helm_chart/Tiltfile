@@ -1,0 +1,64 @@
+def ensure_helm_chart(repo_name, repo_url, chart_name, chart_version, charts_path, update_repo=True):
+    """
+    Ensures a helm chart is downloaded locally in the charts directory.
+    Downloads the chart synchronously if it doesn't exist or version doesn't match.
+    The chart will be stored at {charts_path}/{chart_name}.
+
+    Args:
+        repo_name: Helm repository name (e.g., 'bitnami')
+        repo_url: Helm repository URL
+        chart_name: Chart name (e.g., 'redis')
+        chart_version: Chart version to download (e.g., '20.3.0')
+        charts_path: Directory path where charts should be stored (e.g., './charts' or '~/charts').
+                     Supports relative paths, absolute paths, and ~ expansion.
+                     This directory can be cached in CI for faster builds.
+        update_repo: Whether to update the helm repo before pulling (default: True)
+
+    Returns:
+        The absolute path to the downloaded chart directory
+    """
+    # Normalize charts directory to absolute path
+    # Expand ~ to home directory if present
+    if charts_path.startswith('~'):
+        # Use shell expansion for ~ (os.path.expanduser may not be available in Starlark)
+        charts_path = local('echo "%s"' % charts_path).stdout.strip()
+    charts_path = os.path.abspath(charts_path)
+
+    # Generate full chart path: charts_path/chart_name
+    # Use os.path.join and abspath to safely construct path and prevent traversal
+    chart_path = os.path.abspath(os.path.join(charts_path, chart_name))
+    # Ensure chart_path is within charts_path (prevent path traversal attacks)
+    if not chart_path.startswith(charts_path + '/'):
+        fail('ensure_helm_chart: chart_name contains invalid path components')
+
+    chart_yaml_path = os.path.join(chart_path, 'Chart.yaml')
+
+    # Check if chart exists and version matches
+    need_download = True
+    if os.path.exists(chart_yaml_path):
+        chart_yaml = read_yaml(chart_yaml_path, default={})
+        existing_version = chart_yaml.get('version', '')
+        if existing_version == chart_version:
+            need_download = False
+
+    if not need_download:
+        return chart_path
+
+    # Add helm repo (idempotent)
+    local('helm repo add %s %s 2>/dev/null || true' % (repo_name, repo_url))
+
+    # Update repo if requested
+    if update_repo:
+        local('helm repo update %s' % repo_name)
+
+    # Ensure charts directory exists
+    local('mkdir -p "%s" 2>/dev/null || true' % charts_path)
+
+    # Remove existing chart if present (helm pull will recreate it)
+    local('rm -rf "%s" 2>/dev/null || true' % chart_path)
+
+    # Pull the chart (will extract to charts_path/chart_name)
+    # Tilt's local() will automatically fail if the command returns non-zero exit code
+    local('helm pull %s/%s --version %s --untar --untardir "%s"' % (repo_name, chart_name, chart_version, charts_path))
+
+    return chart_path
