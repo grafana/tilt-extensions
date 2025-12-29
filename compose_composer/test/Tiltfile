@@ -2,17 +2,21 @@
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
 
-load('../Tiltfile', 'test_exports', 'generate_master_compose', 'parse_cli_plugins')
+load('../Tiltfile', 'cc_test_exports', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
 
 # Get internal functions for testing
-_internals = test_exports()
+_internals = cc_test_exports()
 deep_merge = _internals['deep_merge']
 deep_copy = _internals['deep_copy']
-merge_dependency_configs = _internals['merge_dependency_configs']
 collect_wire_when_rules = _internals['collect_wire_when_rules']
 apply_wire_when_rules = _internals['apply_wire_when_rules']
 is_url = _internals['is_url']
 resolve_plugin_spec = _internals['resolve_plugin_spec']
+struct_to_dict = _internals['struct_to_dict']
+apply_modifications = _internals['apply_modifications']
+add_target_wrapper = _internals['add_target_wrapper']
+flatten_dependency_tree = _internals['flatten_dependency_tree']
+is_dep_included_by_profile = _internals['is_dep_included_by_profile']
 
 # ============================================================================
 # Test Helpers
@@ -114,54 +118,205 @@ def test_deep_merge_compose_overrides():
     print("  [PASS] test_deep_merge_compose_overrides")
 
 # ============================================================================
-# merge_dependency_configs Tests
+# local_compose Tests
 # ============================================================================
 
-def test_merge_dependency_configs_basic():
-    """Test basic dependency config merging."""
-    existing = {'name': 'dep1', 'url': 'file:///path1'}
-    new = {'name': 'dep1', 'url': 'file:///path2'}
-    result = merge_dependency_configs(existing, new)
-    assert_equals(result['name'], 'dep1')
-    assert_equals(result['url'], 'file:///path1', "Existing URL should be preserved")
-    print("  [PASS] test_merge_dependency_configs_basic")
+def test_cc_local_compose_basic():
+    """Test creating a basic cc_local_compose struct."""
+    plugin = cc_local_compose('my-plugin', '/path/to/compose.yaml')
+    assert_equals(plugin.name, 'my-plugin')
+    assert_equals(plugin.compose_path, '/path/to/compose.yaml')
+    assert_equals(len(plugin.dependencies), 0)
+    assert_true(plugin._is_local)
+    print("  [PASS] test_cc_local_compose_basic")
 
-def test_merge_dependency_configs_overrides():
-    """Test that compose_overrides are deep merged."""
-    existing = {
-        'name': 'k3s-apiserver',
-        'url': 'file:///path',
-        'compose_overrides': {
-            'services': {
-                'crd-loader': {
-                    'volumes': ['/path1:/crds/path1:ro'],
-                },
-            },
-        },
-    }
-    new = {
-        'name': 'k3s-apiserver',
-        'url': 'file:///path',
-        'compose_overrides': {
-            'services': {
-                'crd-loader': {
-                    'volumes': ['/path2:/crds/path2:ro'],
-                },
-            },
-        },
-    }
-    result = merge_dependency_configs(existing, new)
-    volumes = result['compose_overrides']['services']['crd-loader']['volumes']
-    assert_equals(len(volumes), 2, "CRD volumes should be merged")
-    print("  [PASS] test_merge_dependency_configs_overrides")
+def test_cc_local_compose_with_dependencies():
+    """Test creating cc_local_compose with dependencies."""
+    dep1 = struct(
+        name='dep1',
+        url='file:///path',
+        ref=None,
+        repo_path='dep1',
+        compose_path='/path/dep1.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    dep2 = struct(
+        name='dep2',
+        url='file:///path',
+        ref=None,
+        repo_path='dep2',
+        compose_path='/path/dep2.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    plugin = cc_local_compose('my-plugin', '/path/to/compose.yaml', dep1, dep2)
+    assert_equals(len(plugin.dependencies), 2)
+    assert_equals(plugin.dependencies[0].name, 'dep1')
+    assert_equals(plugin.dependencies[1].name, 'dep2')
+    print("  [PASS] test_cc_local_compose_with_dependencies")
 
-def test_merge_dependency_configs_ignores_internal():
-    """Test that internal fields (_from_cli, etc.) are not copied from new."""
-    existing = {'name': 'dep1', 'url': 'file:///path'}
-    new = {'name': 'dep1', 'url': 'file:///path', '_from_cli': True, '_from_graph': 'other'}
-    result = merge_dependency_configs(existing, new)
-    assert_true('_from_cli' not in result or not result.get('_from_cli'), "Internal fields should not be copied")
-    print("  [PASS] test_merge_dependency_configs_ignores_internal")
+# ============================================================================
+# flatten_dependency_tree Tests
+# ============================================================================
+
+def test_flatten_dependency_tree_simple():
+    """Test flattening a simple dependency tree."""
+    dep1 = struct(
+        name='dep1',
+        url='file:///path',
+        ref=None,
+        repo_path='dep1',
+        compose_path='/path/dep1.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    root = cc_local_compose('root', '/path/root.yaml', dep1)
+    result = flatten_dependency_tree(root, [])
+    
+    # Should have dep1 first, then root
+    assert_equals(len(result), 2)
+    assert_equals(result[0]['name'], 'dep1')
+    assert_equals(result[1]['name'], 'root')
+    print("  [PASS] test_flatten_dependency_tree_simple")
+
+def test_flatten_dependency_tree_nested():
+    """Test flattening nested dependencies."""
+    dep_inner = struct(
+        name='inner',
+        url='file:///path',
+        ref=None,
+        repo_path='inner',
+        compose_path='/path/inner.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    dep_outer = struct(
+        name='outer',
+        url='file:///path',
+        ref=None,
+        repo_path='outer',
+        compose_path='/path/outer.yaml',
+        compose_overrides={},
+        dependencies=[dep_inner],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    root = cc_local_compose('root', '/path/root.yaml', dep_outer)
+    result = flatten_dependency_tree(root, [])
+    
+    # Should be: inner, outer, root (depth-first)
+    assert_equals(len(result), 3)
+    assert_equals(result[0]['name'], 'inner')
+    assert_equals(result[1]['name'], 'outer')
+    assert_equals(result[2]['name'], 'root')
+    print("  [PASS] test_flatten_dependency_tree_nested")
+
+def test_flatten_dependency_tree_deduplicates():
+    """Test that duplicate dependencies are deduplicated."""
+    shared_dep = struct(
+        name='shared',
+        url='file:///path',
+        ref=None,
+        repo_path='shared',
+        compose_path='/path/shared.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    dep1 = struct(
+        name='dep1',
+        url='file:///path',
+        ref=None,
+        repo_path='dep1',
+        compose_path='/path/dep1.yaml',
+        compose_overrides={},
+        dependencies=[shared_dep],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    dep2 = struct(
+        name='dep2',
+        url='file:///path',
+        ref=None,
+        repo_path='dep2',
+        compose_path='/path/dep2.yaml',
+        compose_overrides={},
+        dependencies=[shared_dep],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    root = cc_local_compose('root', '/path/root.yaml', dep1, dep2)
+    result = flatten_dependency_tree(root, [])
+    
+    # Should be: shared (once), dep1, dep2, root
+    names = [r['name'] for r in result]
+    shared_count = len([n for n in names if n == 'shared'])
+    assert_equals(shared_count, 1, "Shared dep should only appear once")
+    assert_equals(len(result), 4)
+    print("  [PASS] test_flatten_dependency_tree_deduplicates")
+
+def test_flatten_dependency_tree_with_cli_plugins():
+    """Test flattening with CLI plugins."""
+    dep1 = struct(
+        name='dep1',
+        url='file:///path',
+        ref=None,
+        repo_path='dep1',
+        compose_path='/path/dep1.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    cli_plugin = struct(
+        name='cli-plugin',
+        url='file:///path',
+        ref=None,
+        repo_path='cli-plugin',
+        compose_path='/path/cli.yaml',
+        compose_overrides={},
+        dependencies=[],
+        _symbols={},
+        _from_cli=True,
+        _is_local=False,
+    )
+    
+    root = cc_local_compose('root', '/path/root.yaml', dep1)
+    result = flatten_dependency_tree(root, [cli_plugin])
+    
+    # Should have: dep1, root, cli-plugin
+    names = [r['name'] for r in result]
+    assert_in('dep1', names)
+    assert_in('root', names)
+    assert_in('cli-plugin', names)
+    print("  [PASS] test_flatten_dependency_tree_with_cli_plugins")
 
 # ============================================================================
 # is_url Tests
@@ -398,6 +553,228 @@ def test_apply_wire_when_rules_creates_top_level_volumes():
     print("  [PASS] test_apply_wire_when_rules_creates_top_level_volumes")
 
 # ============================================================================
+# struct_to_dict Tests
+# ============================================================================
+
+def test_struct_to_dict_basic():
+    """Test converting a basic struct to dict."""
+    s = struct(
+        name='test-dep',
+        url='file:///path',
+        ref=None,
+        repo_path='test-dep',
+        compose_path='/path/compose.yaml',
+        compose_overrides={'services': {}},
+        dependencies=[],
+        _symbols={'fn': lambda: None},
+        _from_cli=False,
+        _is_local=False,
+    )
+    result = struct_to_dict(s)
+    assert_equals(result['name'], 'test-dep')
+    assert_equals(result['url'], 'file:///path')
+    assert_equals(result['_from_cli'], False)
+    assert_true('symbols' in result, "Should have symbols key")
+    print("  [PASS] test_struct_to_dict_basic")
+
+def test_struct_to_dict_cc_local_compose():
+    """Test converting a cc_local_compose struct to dict."""
+    plugin = cc_local_compose('my-plugin', '/path/to/compose.yaml')
+    result = struct_to_dict(plugin)
+    assert_equals(result['name'], 'my-plugin')
+    assert_equals(result['compose_path'], '/path/to/compose.yaml')
+    assert_true(result['_is_local'])
+    print("  [PASS] test_struct_to_dict_cc_local_compose")
+
+def test_struct_to_dict_preserves_compose_overrides():
+    """Test that compose_overrides are preserved."""
+    overrides = {'services': {'svc': {'environment': {'VAR': 'val'}}}}
+    s = struct(
+        name='test',
+        url='file:///path',
+        ref=None,
+        repo_path='test',
+        compose_path='/path/compose.yaml',
+        compose_overrides=overrides,
+        dependencies=[],
+        _symbols={},
+        _from_cli=True,
+        _is_local=False,
+    )
+    result = struct_to_dict(s)
+    assert_equals(result['compose_overrides']['services']['svc']['environment']['VAR'], 'val')
+    print("  [PASS] test_struct_to_dict_preserves_compose_overrides")
+
+# ============================================================================
+# apply_modifications Tests
+# ============================================================================
+
+def test_apply_modifications_single():
+    """Test applying a single modification."""
+    deps = [
+        {'name': 'k3s-apiserver', 'url': 'file:///path', 'compose_overrides': {}},
+        {'name': 'mysql', 'url': 'file:///path', 'compose_overrides': {}},
+    ]
+    mods = [
+        {
+            '_target': 'k3s-apiserver',
+            'services': {'crd-loader': {'volumes': ['/crds:/crds:ro']}},
+        },
+    ]
+    apply_modifications(deps, mods)
+    assert_in('services', deps[0]['compose_overrides'])
+    assert_in('crd-loader', deps[0]['compose_overrides']['services'])
+    print("  [PASS] test_apply_modifications_single")
+
+def test_apply_modifications_multiple_same_target():
+    """Test applying multiple modifications to the same target."""
+    deps = [
+        {'name': 'k3s-apiserver', 'url': 'file:///path', 'compose_overrides': {}},
+    ]
+    mods = [
+        {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/path1:/crds/p1:ro']}}},
+        {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/path2:/crds/p2:ro']}}},
+    ]
+    apply_modifications(deps, mods)
+    volumes = deps[0]['compose_overrides']['services']['crd-loader']['volumes']
+    assert_equals(len(volumes), 2, "Both modifications should be merged")
+    print("  [PASS] test_apply_modifications_multiple_same_target")
+
+def test_apply_modifications_missing_target():
+    """Test that modifications with missing targets are skipped."""
+    deps = [
+        {'name': 'mysql', 'url': 'file:///path', 'compose_overrides': {}},
+    ]
+    mods = [
+        {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/crds:/crds:ro']}}},
+    ]
+    # Should not fail, just skip
+    apply_modifications(deps, mods)
+    assert_equals(deps[0]['compose_overrides'], {}, "Should not be modified")
+    print("  [PASS] test_apply_modifications_missing_target")
+
+# ============================================================================
+# add_target_wrapper Tests
+# ============================================================================
+
+def test_add_target_wrapper_adds_target():
+    """Test that wrapper adds _target to result."""
+    def original_fn():
+        return {'services': {'svc': {}}}
+    
+    wrapped = add_target_wrapper(original_fn, 'test-dep')
+    result = wrapped()
+    
+    assert_in('_target', result)
+    assert_equals(result['_target'], 'test-dep')
+    print("  [PASS] test_add_target_wrapper_adds_target")
+
+def test_add_target_wrapper_passes_through_args():
+    """Test that wrapper passes arguments through."""
+    received = []
+    def original_fn(crd_paths):
+        received.append(crd_paths)
+        return {'services': {}}
+    
+    wrapped = add_target_wrapper(original_fn, 'test-dep')
+    wrapped(['/path/to/crds'])
+    
+    assert_equals(received[0], ['/path/to/crds'], "Args should pass through")
+    print("  [PASS] test_add_target_wrapper_passes_through_args")
+
+# ============================================================================
+# Profile Tests
+# ============================================================================
+
+def test_is_dep_included_no_profiles_always_included():
+    """Test that deps with no profiles are always included."""
+    # No profiles on dep = always included
+    assert_true(is_dep_included_by_profile([], []), "No profiles, no active = included")
+    assert_true(is_dep_included_by_profile([], ['dev']), "No profiles, active dev = included")
+    assert_true(is_dep_included_by_profile([], ['dev', 'staging']), "No profiles, multiple active = included")
+    print("  [PASS] test_is_dep_included_no_profiles_always_included")
+
+def test_is_dep_included_with_profiles_needs_match():
+    """Test that deps with profiles need at least one match."""
+    # Dep has profiles, no active profiles = excluded
+    assert_true(not is_dep_included_by_profile(['dev'], []), "Has profile, no active = excluded")
+    
+    # Dep has profiles, matching active = included
+    assert_true(is_dep_included_by_profile(['dev'], ['dev']), "Matching profile = included")
+    assert_true(is_dep_included_by_profile(['dev', 'staging'], ['dev']), "One match = included")
+    assert_true(is_dep_included_by_profile(['dev'], ['dev', 'staging']), "One match = included")
+    
+    # Dep has profiles, no match = excluded
+    assert_true(not is_dep_included_by_profile(['dev'], ['staging']), "No match = excluded")
+    assert_true(not is_dep_included_by_profile(['dev', 'full'], ['staging', 'test']), "No match = excluded")
+    print("  [PASS] test_is_dep_included_with_profiles_needs_match")
+
+def test_cc_local_compose_with_profiles():
+    """Test creating cc_local_compose with profiles."""
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+        profiles=['dev', 'staging'],
+    )
+    assert_equals(plugin.name, 'my-plugin')
+    assert_equals(plugin.profiles, ['dev', 'staging'])
+    print("  [PASS] test_cc_local_compose_with_profiles")
+
+def test_flatten_dependency_tree_with_profiles():
+    """Test that dependency tree respects profiles."""
+    always_included = struct(
+        name='always',
+        url='file:///path',
+        ref=None,
+        repo_path='always',
+        compose_path='/path/always.yaml',
+        compose_overrides={},
+        dependencies=[],
+        profiles=[],  # No profiles = always included
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    dev_only = struct(
+        name='dev-only',
+        url='file:///path',
+        ref=None,
+        repo_path='dev-only',
+        compose_path='/path/dev.yaml',
+        compose_overrides={},
+        dependencies=[],
+        profiles=['dev'],  # Only in dev
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+    )
+    
+    root = cc_local_compose('root', '/path/root.yaml', always_included, dev_only)
+    
+    # With no active profiles, only 'always' should be included
+    result = flatten_dependency_tree(root, [], None, [])
+    names = [r['name'] for r in result]
+    assert_in('always', names)
+    assert_in('root', names)
+    assert_true('dev-only' not in names, "dev-only should be excluded with no profiles")
+    
+    # With 'dev' profile, both should be included
+    result_dev = flatten_dependency_tree(root, [], None, ['dev'])
+    names_dev = [r['name'] for r in result_dev]
+    assert_in('always', names_dev)
+    assert_in('dev-only', names_dev)
+    assert_in('root', names_dev)
+    
+    print("  [PASS] test_flatten_dependency_tree_with_profiles")
+
+def test_cc_get_active_profiles():
+    """Test that cc_get_active_profiles returns a list."""
+    profiles = cc_get_active_profiles()
+    assert_true(type(profiles) == 'list', "Should return a list")
+    print("  [PASS] test_cc_get_active_profiles")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -410,10 +787,15 @@ def run_tests():
     test_deep_merge_does_not_mutate()
     test_deep_merge_compose_overrides()
     
-    print("\n=== merge_dependency_configs Tests ===")
-    test_merge_dependency_configs_basic()
-    test_merge_dependency_configs_overrides()
-    test_merge_dependency_configs_ignores_internal()
+    print("\n=== cc_local_compose Tests ===")
+    test_cc_local_compose_basic()
+    test_cc_local_compose_with_dependencies()
+    
+    print("\n=== flatten_dependency_tree Tests ===")
+    test_flatten_dependency_tree_simple()
+    test_flatten_dependency_tree_nested()
+    test_flatten_dependency_tree_deduplicates()
+    test_flatten_dependency_tree_with_cli_plugins()
     
     print("\n=== is_url Tests ===")
     test_is_url_https()
@@ -439,6 +821,27 @@ def run_tests():
     test_apply_wire_when_rules_skips_when_trigger_missing()
     test_apply_wire_when_rules_creates_top_level_volumes()
     
+    print("\n=== struct_to_dict Tests ===")
+    test_struct_to_dict_basic()
+    test_struct_to_dict_cc_local_compose()
+    test_struct_to_dict_preserves_compose_overrides()
+    
+    print("\n=== apply_modifications Tests ===")
+    test_apply_modifications_single()
+    test_apply_modifications_multiple_same_target()
+    test_apply_modifications_missing_target()
+    
+    print("\n=== add_target_wrapper Tests ===")
+    test_add_target_wrapper_adds_target()
+    test_add_target_wrapper_passes_through_args()
+    
+    print("\n=== Profile Tests ===")
+    test_is_dep_included_no_profiles_always_included()
+    test_is_dep_included_with_profiles_needs_match()
+    test_cc_local_compose_with_profiles()
+    test_flatten_dependency_tree_with_profiles()
+    test_cc_get_active_profiles()
+    
     print("\n" + "=" * 50)
     print("All tests passed!")
     print("=" * 50)
@@ -448,4 +851,3 @@ run_tests()
 
 # Dummy resource to satisfy tilt ci (which expects at least one resource)
 local_resource('tests', cmd='echo "Tests completed"', auto_init=False)
-

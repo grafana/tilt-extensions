@@ -10,15 +10,20 @@
 #   - compose_overrides that are deep-merged when dependencies overlap
 #
 # Usage:
-#   load('ext://compose_composer', 'generate_master_compose', 'parse_cli_plugins')
+#   load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
 #   
-#   cli_plugins = parse_cli_plugins(os.path.dirname(__file__))
-#   dependencies = core_dependencies + cli_plugins
-#   master_compose = generate_master_compose(dependencies)
+#   k3s = cc_dependency(name='k3s-apiserver', url='...')
+#   mysql = cc_dependency(name='mysql', url='...', profiles=['dev', 'full'])  # Only in dev/full
+#   def cc_get_plugin():
+#       return cc_local_compose('my-plugin', os.path.dirname(__file__) + '/compose.yaml', k3s, mysql)
+#   
+#   master_compose = cc_generate_master_compose(cc_get_plugin(), cc_parse_cli_plugins(...))
 #   docker_compose(encode_yaml(master_compose))
 #
 # CLI Usage:
-#   tilt up -- plugin-name ../relative/path /absolute/path https://github.com/org/repo.git
+#   tilt up -- plugin-name ../relative/path
+#   tilt up -- --profile=dev --profile=debug plugin-name
+#   CC_PROFILES=dev tilt up -- plugin-name
 #
 # Dependency schema:
 #   name: str                      - Extension name (required)
@@ -27,20 +32,272 @@
 #   repo_path: str                 - Path within repo (default: name)
 #   get_compose_path_function: str - Function to call for compose path (default: 'get_compose_path')
 #   compose_overrides: dict        - Static overrides merged into compose (optional)
+#   profiles: list                 - Profile names for conditional inclusion (optional, empty=always)
 #
 # Extension exports:
-#   get_compose_path() -> str         - Returns path to compose file (required)
+#   cc_get_plugin() -> struct         - Returns plugin struct from cc_local_compose (required)
 #   get_wire_when() -> dict           - Conditional wiring rules (optional)
 #   get_provides() -> dict            - What this extension provides (optional, for docs)
-#   get_dependency_graph() -> dict    - Dependencies this extension brings (optional)
-#                                       Returns: {dependencies: [...], compose_path: str}
+#   get_compose_path() -> str         - Legacy: Returns path to compose file (fallback)
 
 # ============================================================================
 # CLI Argument Parsing
 # ============================================================================
 
 config.define_string_list('args', args=True, usage='Plugins to load (name, path, or URL)')
+config.define_string_list('profile', usage='Profiles to activate (can be repeated)')
 _cfg = config.parse()
+
+# ============================================================================
+# Profile Management
+# ============================================================================
+
+def _get_active_profiles():
+    """
+    Get list of active profiles from CLI args and environment variable.
+    
+    Priority: CLI --profile flags take precedence over CC_PROFILES env var.
+    
+    Returns:
+        List of active profile names (may be empty)
+    """
+    # CLI profiles from --profile=X flags
+    cli_profiles = _cfg.get('profile', [])
+    
+    if cli_profiles:
+        return cli_profiles
+    
+    # Fall back to CC_PROFILES environment variable
+    env_profiles = os.environ.get('CC_PROFILES', '')
+    if env_profiles:
+        return [p.strip() for p in env_profiles.split(',') if p.strip()]
+    
+    return []
+
+# Module-level active profiles (computed once at load time)
+_active_profiles = _get_active_profiles()
+
+def cc_get_active_profiles():
+    """
+    Get the list of currently active profiles.
+    
+    Use this to pass profile flags to docker_compose() if needed.
+    
+    Returns:
+        List of active profile names
+    
+    Example:
+        profiles = cc_get_active_profiles()
+        # Pass to docker compose if using native profiles in compose files
+    """
+    return _active_profiles
+
+def _is_dep_included_by_profile(dep_profiles, active_profiles):
+    """
+    Check if a dependency should be included based on profiles.
+    
+    Args:
+        dep_profiles: List of profiles the dependency belongs to
+        active_profiles: List of currently active profiles
+    
+    Returns:
+        True if dependency should be included, False otherwise
+    
+    Rules (following Docker Compose model):
+        - If dep has no profiles (empty list): always included
+        - If dep has profiles: included only if at least one matches active profiles
+    """
+    # No profiles = always included (Docker Compose default behavior)
+    if not dep_profiles:
+        return True
+    
+    # If no profiles are active, only include deps without profiles
+    if not active_profiles:
+        return False
+    
+    # Check for intersection between dep profiles and active profiles
+    for p in dep_profiles:
+        if p in active_profiles:
+            return True
+    
+    return False
+
+# ============================================================================
+# Local Compose (Plugin Declaration)
+# ============================================================================
+
+def cc_local_compose(name, compose_path, *dependencies, **kwargs):
+    """
+    Declare a local plugin with its compose path and dependencies.
+    
+    Every plugin should export a cc_get_plugin() function that returns
+    a cc_local_compose struct. This creates a uniform dependency tree model.
+    
+    Args:
+        name: Plugin name (required)
+        compose_path: Absolute path to the compose file (required)
+        *dependencies: Vararg of dependency structs this plugin depends on
+        profiles: List of profile names this plugin belongs to (optional)
+                  If empty, the plugin is always included (default behavior)
+    
+    Returns:
+        struct with:
+          - name: Plugin name
+          - compose_path: Path to compose file
+          - dependencies: List of dependency structs
+          - profiles: List of profile names
+          - _is_local: True (marker for local plugins)
+    
+    Example:
+        # Always included (no profiles)
+        def cc_get_plugin():
+            return cc_local_compose(
+                'grafana',
+                os.path.dirname(__file__) + '/grafana.yaml',
+            )
+        
+        # Only included when 'dev' or 'full' profile is active
+        def cc_get_plugin():
+            return cc_local_compose(
+                'debug-tools',
+                os.path.dirname(__file__) + '/docker-compose.yaml',
+                profiles=['dev', 'full'],
+            )
+    """
+    profiles = kwargs.get('profiles', [])
+    return struct(
+        name=name,
+        compose_path=compose_path,
+        dependencies=list(dependencies),
+        profiles=profiles,
+        compose_overrides={},
+        _symbols={},
+        _is_local=True,
+        _from_cli=False,
+    )
+
+# ============================================================================
+# Dependency Struct (Remote Plugin Loading)
+# ============================================================================
+
+def cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[]):
+    """
+    Declare a dependency on a remote plugin and load its extension.
+    
+    This function registers the extension with Tilt, loads its symbols,
+    and returns a struct with bound helper functions.
+    
+    The extension should export a cc_get_plugin() function that returns a
+    cc_local_compose struct. This provides the compose_path and any nested
+    dependencies the extension has.
+    
+    Args:
+        name: Extension name (required)
+        url: Extension repo URL - file:// or https:// (required)
+        ref: Git ref for https:// URLs (default: 'main')
+        repo_path: Path within repo (default: name)
+        compose_overrides: Static overrides dict (optional)
+        imports: List of symbol names to bind to the struct (optional)
+        profiles: List of profile names this dependency belongs to (optional)
+                  If empty, the dependency is always included (default behavior)
+    
+    Returns:
+        struct with:
+          - name, url, ref, repo_path, compose_overrides (dependency metadata)
+          - compose_path: From extension's cc_get_plugin() if available
+          - dependencies: From extension's cc_get_plugin() if available
+          - profiles: List of profile names
+          - _symbols: dict of loaded symbols
+          - Bound helper functions from imports list
+    
+    Example:
+        # Always included (no profiles)
+        k3s = cc_dependency(
+            name='k3s-apiserver',
+            url='file:///path/to/devenv-compose',
+            imports=['register_crds'],
+        )
+        
+        # Only included when 'dev' or 'full' profile is active
+        mysql = cc_dependency(
+            name='mysql',
+            url='file:///path/to/devenv-compose',
+            profiles=['dev', 'full'],
+        )
+    """
+    # Use name as default repo_path
+    if repo_path == None:
+        repo_path = name
+    
+    # Register extension repo + extension
+    # Use 'cc-' prefix for repo name to avoid conflicts with user's own registrations
+    repo_name = 'cc-' + name
+    
+    if url.startswith('file://'):
+        v1alpha1.extension_repo(name=repo_name, url=url)
+    else:
+        v1alpha1.extension_repo(name=repo_name, url=url, ref=ref if ref else 'main')
+    
+    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
+    symbols = load_dynamic('ext://' + name)
+    
+    # Try to get plugin info from cc_get_plugin() export
+    compose_path = None
+    nested_deps = []
+    
+    get_plugin_fn = symbols.get('cc_get_plugin')
+    if get_plugin_fn:
+        plugin_info = get_plugin_fn()
+        compose_path = plugin_info.compose_path
+        nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
+    else:
+        # Fallback to legacy get_compose_path() for backward compatibility
+        get_compose_path_fn = symbols.get('get_compose_path')
+        if get_compose_path_fn:
+            compose_path = get_compose_path_fn()
+    
+    # Build struct fields
+    struct_fields = {
+        'name': name,
+        'url': url,
+        'ref': ref,
+        'repo_path': repo_path,
+        'compose_path': compose_path,
+        'compose_overrides': compose_overrides,
+        'dependencies': nested_deps,
+        'profiles': profiles,
+        '_symbols': symbols,
+        '_from_cli': False,
+        '_is_local': False,
+    }
+    
+    # Bind imported helper functions with target metadata wrapper
+    for fn_name in imports:
+        if fn_name not in symbols:
+            fail("Extension " + name + " does not export '" + fn_name + "'")
+        
+        # Wrap to add _target metadata to results
+        original_fn = symbols[fn_name]
+        struct_fields[fn_name] = _add_target_wrapper(original_fn, name)
+    
+    return struct(**struct_fields)
+
+def _add_target_wrapper(fn, dep_name):
+    """
+    Wrap a helper function to add _target metadata to the result.
+    
+    This tells compose_composer which dependency the modification applies to.
+    """
+    def wrapped(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        
+        # If result is a dict (like compose_overrides), add target
+        if type(result) == 'dict':
+            result['_target'] = dep_name
+        
+        return result
+    
+    return wrapped
 
 def _is_url(s):
     """Check if string is a URL (git or https)."""
@@ -81,171 +338,70 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         '_from_cli': True,
     }
 
-def parse_cli_plugins(tiltfile_dir):
+def cc_parse_cli_plugins(tiltfile_dir):
     """
-    Parse CLI positional args and return list of dependency dicts.
+    Parse CLI positional args and return list of dependency structs.
+    
+    Each CLI plugin is loaded as a dependency struct, just like core dependencies.
+    This provides a uniform interface for all dependencies.
     
     Args:
         tiltfile_dir: Directory of the calling Tiltfile (for relative path resolution)
                       Typically: os.path.dirname(__file__)
     
     Returns:
-        List of dependency dicts with 'name' and 'url' keys
+        List of dependency structs (same type as returned by dependency())
     """
     plugins = _cfg.get('args', [])
     deps = []
     
     for plugin in plugins:
-        dep = _resolve_plugin_spec(plugin, tiltfile_dir)
+        spec = _resolve_plugin_spec(plugin, tiltfile_dir)
+        print("CLI plugin: " + spec['name'] + " -> " + spec['url'])
+        
+        # Create a dependency struct (this also loads its symbols/cc_get_plugin)
+        dep = cc_dependency(
+            name=spec['name'],
+            url=spec['url'],
+            repo_path=spec.get('repo_path', spec['name']),
+        )
+        
+        # Mark as from CLI (create new struct with additional fields)
+        dep = struct(
+            name=dep.name,
+            url=dep.url,
+            ref=dep.ref,
+            repo_path=dep.repo_path,
+            compose_path=dep.compose_path,
+            compose_overrides=dep.compose_overrides,
+            dependencies=dep.dependencies,
+            profiles=dep.profiles,
+            _symbols=dep._symbols,
+            _from_cli=True,
+            _is_local=False,
+        )
+        
         deps.append(dep)
-        print("CLI plugin: " + dep['name'] + " -> " + dep['url'])
     
     return deps
 
 # ============================================================================
-# Dependency Graph Expansion and Merging
+# Compose Path Resolution
 # ============================================================================
 
-def _expand_dependency_graphs(dependencies, loaded_extensions):
-    """
-    Expand dependencies by loading CLI plugins' dependency graphs.
+def _get_compose_path_from_dep(dep):
+    """Get compose path from a dependency dict."""
+    # First check if compose_path is directly available (new API)
+    if dep.get('compose_path'):
+        return dep['compose_path']
     
-    When a CLI plugin exports get_dependency_graph(), its dependencies are
-    merged into the main list. This allows plugins to bring their own
-    dependency trees.
+    # Fallback to calling get_compose_path function (legacy)
+    symbols = dep.get('symbols', {})
+    fn = symbols.get('get_compose_path')
+    if fn:
+        return fn()
     
-    Args:
-        dependencies: Initial list of dependencies
-        loaded_extensions: Dict tracking loaded extensions (mutable)
-    
-    Returns:
-        Expanded list with merged dependencies (deduplicated by name)
-    """
-    expanded = []
-    seen_names = {}
-    
-    # First pass: collect all dependencies including those from CLI plugin graphs
-    all_deps = []
-    
-    for dep in dependencies:
-        all_deps.append(dep)
-        
-        # If this is a CLI plugin, we need to load it first to check for get_dependency_graph
-        if dep.get('_from_cli'):
-            # Temporarily load the extension to check for dependency graph
-            _load_extension(dep, loaded_extensions)
-            symbols = dep.get('symbols', {})
-            get_dep_graph = symbols.get('get_dependency_graph')
-            
-            if get_dep_graph:
-                graph = get_dep_graph()
-                graph_deps = graph.get('dependencies', [])
-                
-                print("  [graph] " + dep['name'] + " brings " + str(len(graph_deps)) + " dependencies")
-                
-                for sub_dep in graph_deps:
-                    # Mark the source so we can trace where it came from
-                    sub_dep['_from_graph'] = dep['name']
-                    all_deps.append(sub_dep)
-    
-    # Second pass: deduplicate by name, merging compose_overrides
-    for dep in all_deps:
-        name = dep['name']
-        
-        if name in seen_names:
-            # Merge with existing
-            existing = seen_names[name]
-            existing = _merge_dependency_configs(existing, dep)
-            seen_names[name] = existing
-            
-            # Update in expanded list
-            for i, e in enumerate(expanded):
-                if e['name'] == name:
-                    expanded[i] = existing
-                    break
-        else:
-            seen_names[name] = dep
-            expanded.append(dep)
-    
-    return expanded
-
-def _merge_dependency_configs(existing, new):
-    """
-    Merge two dependency configs with the same name.
-    
-    - compose_overrides are deep-merged
-    - Other fields from 'new' override 'existing' (except internal fields)
-    """
-    result = {}
-    
-    # Copy existing fields
-    for key in existing:
-        result[key] = existing[key]
-    
-    # Merge/override with new fields (except internal tracking fields)
-    for key in new:
-        if key.startswith('_'):
-            continue  # Skip internal fields like _from_cli, _from_graph
-        
-        if key == 'compose_overrides':
-            # Deep merge compose_overrides
-            existing_overrides = result.get('compose_overrides', {})
-            new_overrides = new.get('compose_overrides', {})
-            result['compose_overrides'] = _deep_merge(existing_overrides, new_overrides)
-        elif key not in result:
-            result[key] = new[key]
-    
-    return result
-
-# ============================================================================
-# Extension Loading
-# ============================================================================
-
-def _load_extension(dep, loaded_extensions):
-    """Load a Tiltfile extension and populate its symbols."""
-    name = dep['name']
-    
-    # Check if already loaded (either by us or by the orchestrator loading helpers)
-    if name in loaded_extensions:
-        dep['symbols'] = loaded_extensions[name]
-        return dep
-    
-    # Check if symbols already exist (loaded by orchestrator before calling generate_master_compose)
-    if dep.get('symbols'):
-        loaded_extensions[name] = dep['symbols']
-        return dep
-    
-    url = dep['url']
-    ref = dep.get('ref', 'main')
-    repo_path = dep.get('repo_path', name)
-    
-    # Use a unique repo name to avoid conflicts with orchestrator's registrations
-    repo_name = 'cc-' + name
-    
-    # Register and load
-    if url.startswith('file://'):
-        v1alpha1.extension_repo(name=repo_name, url=url)
-    else:
-        v1alpha1.extension_repo(name=repo_name, url=url, ref=ref)
-    
-    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
-    dep['symbols'] = load_dynamic('ext://' + name)
-    loaded_extensions[name] = dep['symbols']
-    return dep
-
-def _get_compose_path_from_extension(dep):
-    """Get compose path from a loaded extension's function."""
-    fn_name = dep.get('get_compose_path_function', 'get_compose_path')
-    symbols = dep.get('symbols')
-    
-    if not symbols:
-        fail("Extension " + dep['name'] + " has no symbols")
-    
-    fn = symbols.get(fn_name)
-    if not fn:
-        fail("Extension " + dep['name'] + " has no " + fn_name + " function")
-    
-    return fn()
+    fail("Dependency " + dep['name'] + " has no compose_path")
 
 # ============================================================================
 # Deep Merge Utility
@@ -479,82 +635,253 @@ def _generate_include_entry(entry):
         }
 
 # ============================================================================
+# Struct to Dict Conversion
+# ============================================================================
+
+def _struct_to_dict(dep_struct):
+    """
+    Convert a dependency struct to a dict for internal processing.
+    
+    Structs from cc_dependency(), cc_local_compose(), or cc_parse_cli_plugins() need
+    to be converted to dicts for the internal processing pipeline.
+    """
+    result = {
+        'name': dep_struct.name,
+        'compose_overrides': dep_struct.compose_overrides,
+        'profiles': getattr(dep_struct, 'profiles', []),
+        '_from_cli': dep_struct._from_cli,
+        '_is_local': getattr(dep_struct, '_is_local', False),
+    }
+    
+    # Handle local_compose structs
+    if getattr(dep_struct, '_is_local', False):
+        result['compose_path'] = dep_struct.compose_path
+        result['dependencies'] = dep_struct.dependencies
+        result['symbols'] = {}
+    else:
+        # Remote dependency
+        result['url'] = dep_struct.url
+        result['ref'] = dep_struct.ref
+        result['repo_path'] = dep_struct.repo_path
+        result['compose_path'] = getattr(dep_struct, 'compose_path', None)
+        result['dependencies'] = getattr(dep_struct, 'dependencies', [])
+        result['symbols'] = dep_struct._symbols
+    
+    return result
+
+def _apply_modifications(dependencies, modifications):
+    """
+    Apply modification dicts to their target dependencies.
+    
+    Each modification should have a '_target' field indicating which
+    dependency to modify, and a 'compose_overrides'-like structure.
+    """
+    # Build a map of dep name -> dep for quick lookup
+    dep_map = {}
+    for dep in dependencies:
+        dep_map[dep['name']] = dep
+    
+    for mod in modifications:
+        if type(mod) != 'dict':
+            continue
+        
+        target = mod.get('_target')
+        if not target:
+            print("  Warning: modification has no _target, skipping")
+            continue
+        
+        if target not in dep_map:
+            print("  Warning: modification target '" + target + "' not in dependencies, skipping")
+            continue
+        
+        dep = dep_map[target]
+        
+        # Extract compose_overrides from modification (everything except _target)
+        mod_overrides = {}
+        for key in mod:
+            if not key.startswith('_'):
+                mod_overrides[key] = mod[key]
+        
+        # Deep merge into existing compose_overrides
+        existing = dep.get('compose_overrides', {})
+        dep['compose_overrides'] = _deep_merge(existing, mod_overrides)
+        
+        print("  Applied modification to: " + target)
+
+# ============================================================================
+# Dependency Tree Flattening
+# ============================================================================
+
+def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles=None):
+    """
+    Flatten a dependency tree into a list, preserving order (dependencies first).
+    
+    Walks the tree depth-first, adding each unique dependency once.
+    Filters dependencies based on active profiles.
+    Returns a flat list suitable for compose assembly.
+    
+    Args:
+        root: The root plugin struct (local_compose or dependency)
+        cli_plugins: Additional plugins from CLI
+        seen_names: Set of already-seen dependency names (for recursion)
+        active_profiles: List of active profile names (uses module-level if None)
+    
+    Returns:
+        Flat list of dependency dicts, dependencies before dependents
+    """
+    if seen_names == None:
+        seen_names = {}
+    
+    if active_profiles == None:
+        active_profiles = _active_profiles
+    
+    result = []
+    
+    # Process root's dependencies first (depth-first)
+    root_dict = _struct_to_dict(root) if type(root) == 'struct' else root
+    
+    for dep in root_dict.get('dependencies', []):
+        dep_dict = _struct_to_dict(dep) if type(dep) == 'struct' else dep
+        
+        # Check if dependency should be included based on profiles
+        dep_profiles = dep_dict.get('profiles', [])
+        if not _is_dep_included_by_profile(dep_profiles, active_profiles):
+            print("    [profiles] Skipping " + dep_dict['name'] + " (profiles: " + str(dep_profiles) + ")")
+            continue
+        
+        if dep_dict['name'] not in seen_names:
+            seen_names[dep_dict['name']] = dep_dict
+            
+            # Recursively flatten this dependency's dependencies
+            nested = _flatten_dependency_tree(dep, [], seen_names, active_profiles)
+            for n in nested:
+                if n['name'] not in [r['name'] for r in result]:
+                    result.append(n)
+            
+            result.append(dep_dict)
+        else:
+            # Merge compose_overrides if we've seen this dep before
+            existing = seen_names[dep_dict['name']]
+            if dep_dict.get('compose_overrides'):
+                existing['compose_overrides'] = _deep_merge(
+                    existing.get('compose_overrides', {}),
+                    dep_dict['compose_overrides']
+                )
+    
+    # Add root itself (local plugin) - root is always included
+    if root_dict['name'] not in seen_names:
+        seen_names[root_dict['name']] = root_dict
+        result.append(root_dict)
+    
+    # Process CLI plugins (they may bring their own dependency trees)
+    for cli_plugin in cli_plugins:
+        cli_dict = _struct_to_dict(cli_plugin) if type(cli_plugin) == 'struct' else cli_plugin
+        
+        # Check if CLI plugin should be included based on profiles
+        cli_profiles = cli_dict.get('profiles', [])
+        if not _is_dep_included_by_profile(cli_profiles, active_profiles):
+            print("    [profiles] Skipping CLI plugin " + cli_dict['name'] + " (profiles: " + str(cli_profiles) + ")")
+            continue
+        
+        if cli_dict['name'] not in seen_names:
+            # Flatten CLI plugin's dependencies
+            nested = _flatten_dependency_tree(cli_plugin, [], seen_names, active_profiles)
+            for n in nested:
+                if n['name'] not in [r['name'] for r in result]:
+                    result.append(n)
+    
+    return result
+
+# ============================================================================
 # Main Entry Point
 # ============================================================================
 
-def generate_master_compose(
-    dependencies,
-    local_compose_paths=[],
+def cc_generate_master_compose(
+    root_plugin,
+    cli_plugins=[],
     staging_dir=None,
+    modifications=[]
 ):
     """
-    Generate master compose file by assembling dependencies.
+    Generate master compose file by assembling the dependency tree.
     
     This function is symmetric - any plugin can be the orchestrator and
     the result will be the same, because:
     - Wiring rules are defined declaratively in extensions (get_wire_when)
-    - Dependency graphs are expanded and merged (get_dependency_graph)
+    - Dependencies declare their own dependencies via get_plugin()
     - compose_overrides are deep-merged when dependencies overlap
     
     Args:
-        dependencies: List of dependency dicts. Each must have:
-            - name: str (required)
-            - url: str (required)
-            - compose_overrides: dict (optional) - static overrides
-        local_compose_paths: Additional local compose file paths to include
+        root_plugin: The root plugin struct from local_compose() or get_plugin().
+                     Contains compose_path and dependencies.
+        cli_plugins: List of additional plugin structs from parse_cli_plugins()
         staging_dir: Directory for modified compose files.
                      Defaults to .compose-stage/ in current working directory.
+        modifications: List of modification dicts returned by helper functions
+                       (e.g., k3s.register_crds()). Each has '_target' indicating
+                       which dependency to modify.
     
     Returns:
         Dict with 'include' key for docker_compose()
+    
+    Example:
+        k3s = dependency(name='k3s-apiserver', url='...', imports=['register_crds'])
+        mysql = dependency(name='mysql', url='...')
+        
+        def get_plugin():
+            return local_compose('my-plugin', os.path.dirname(__file__) + '/docker-compose.yaml', k3s, mysql)
+        
+        crd_mod = k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/crds'])
+        cli = parse_cli_plugins(os.path.dirname(__file__))
+        
+        master = generate_master_compose(
+            get_plugin(),
+            cli,
+            modifications=[crd_mod],
+        )
     """
     staging_dir = staging_dir if staging_dir else os.path.abspath('.compose-stage')
     
-    # Track loaded extensions to avoid re-registration
-    # This dict is passed through all phases and mutated as extensions are loaded
-    loaded_extensions = {}
+    # Show active profiles
+    active = cc_get_active_profiles()
+    if active:
+        print("\nActive profiles: " + ", ".join(active))
+    else:
+        print("\nActive profiles: (none)")
     
-    # Pre-populate with any extensions that were already loaded by the orchestrator
+    # Flatten the dependency tree (with profile filtering)
+    print("\nFlattening dependency tree:")
+    dependencies = _flatten_dependency_tree(root_plugin, cli_plugins)
+    print("  Total dependencies: " + str(len(dependencies)))
     for dep in dependencies:
-        if dep.get('symbols'):
-            loaded_extensions[dep['name']] = dep['symbols']
+        local_marker = " (local)" if dep.get('_is_local') else ""
+        cli_marker = " (CLI)" if dep.get('_from_cli') else ""
+        profile_marker = ""
+        if dep.get('profiles'):
+            profile_marker = " [" + ", ".join(dep['profiles']) + "]"
+        print("    - " + dep['name'] + local_marker + cli_marker + profile_marker)
+    
+    # Apply modifications from helper functions
+    if modifications:
+        print("\nApplying modifications:")
+        _apply_modifications(dependencies, modifications)
     
     # ========================================================================
-    # Phase 0: Expand dependency graphs from CLI plugins
+    # Collect loaded deps and their symbols
     # ========================================================================
-    # CLI plugins may export get_dependency_graph() which brings their own
-    # dependencies. These are merged with the orchestrator's dependencies,
-    # deduplicating by name and merging compose_overrides.
-    print("\nExpanding dependency graphs:")
-    dependencies = _expand_dependency_graphs(dependencies, loaded_extensions)
-    print("  Total dependencies after expansion: " + str(len(dependencies)))
-    for dep in dependencies:
-        source = ""
-        if dep.get('_from_cli'):
-            source = " (CLI)"
-        elif dep.get('_from_graph'):
-            source = " (from " + dep['_from_graph'] + ")"
-        print("    - " + dep['name'] + source)
-    
-    # ========================================================================
-    # Phase 1: Load all extensions
-    # ========================================================================
-    print("\nLoading extensions:")
+    # Dependencies are already loaded via dependency() call or are local.
+    # Just collect names and symbols for wire_when processing.
     
     loaded_deps = []
     loaded_dep_names = []
     loaded_symbols = {}
     
     for dep in dependencies:
-        if 'url' not in dep:
-            fail("Dependency " + dep['name'] + " must have 'url' field")
-        
-        # Skip if already loaded during graph expansion or by orchestrator
-        if dep.get('symbols'):
-            print("  Already loaded: " + dep['name'])
-        else:
-            print("  Loading: " + dep['name'])
-            _load_extension(dep, loaded_extensions)
+        # Local deps don't have symbols, remote deps already have them
+        if dep.get('_is_local'):
+            pass  # Local plugin, no symbols to load
+        elif not dep.get('symbols'):
+            print("  Warning: " + dep['name'] + " has no symbols (not loaded?)")
         
         loaded_deps.append(dep)
         loaded_dep_names.append(dep['name'])
@@ -580,7 +907,7 @@ def generate_master_compose(
     resolved = []
     
     for dep in loaded_deps:
-        compose_path = _get_compose_path_from_extension(dep)
+        compose_path = _get_compose_path_from_dep(dep)
         project_dir = os.path.dirname(compose_path)
         
         print("  " + dep['name'] + ": " + compose_path)
@@ -635,11 +962,6 @@ def generate_master_compose(
         else:
             print("  - " + entry['dep']['name'] + ": " + entry['compose_path'])
     
-    # Add local compose paths
-    for path in local_compose_paths:
-        includes.append(path)
-        print("  - local: " + path)
-    
     return {'include': includes}
 
 # ============================================================================
@@ -647,14 +969,19 @@ def generate_master_compose(
 # ============================================================================
 # These are exported for unit testing. Not intended for general use.
 
-def test_exports():
+def cc_test_exports():
     """Returns internal functions for testing."""
     return {
         'deep_merge': _deep_merge,
         'deep_copy': _deep_copy,
-        'merge_dependency_configs': _merge_dependency_configs,
         'collect_wire_when_rules': _collect_wire_when_rules,
         'apply_wire_when_rules': _apply_wire_when_rules,
         'is_url': _is_url,
         'resolve_plugin_spec': _resolve_plugin_spec,
+        'struct_to_dict': _struct_to_dict,
+        'apply_modifications': _apply_modifications,
+        'add_target_wrapper': _add_target_wrapper,
+        'flatten_dependency_tree': _flatten_dependency_tree,
+        'is_dep_included_by_profile': _is_dep_included_by_profile,
+        'get_active_profiles': _get_active_profiles,
     }
