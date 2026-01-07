@@ -49,11 +49,11 @@ cli_plugins = cc_parse_cli_plugins(os.path.dirname(__file__))
 # Generate and run
 if __file__ == config.main_path:
     master_compose = cc_generate_master_compose(
-        cc_get_plugin(),                 # Your plugin with its dependencies
-        cli_plugins,                  # Additional plugins from CLI
+        cc_get_plugin(),                # Your plugin with its dependencies
+        cli_plugins,                    # Additional plugins from CLI
         staging_dir=os.path.dirname(__file__) + '/.compose-stage',
     )
-    docker_compose(encode_yaml(master_compose))
+    cc_docker_compose(master_compose)   # Auto-registers services with labels
 ```
 
 ### Adding CLI Plugins
@@ -111,18 +111,26 @@ services:
     image: my-api
 ```
 
-**Automatic COMPOSE_PROFILES integration:**
+**Automatic COMPOSE_PROFILES and service registration:**
 
-Use `cc_docker_compose()` instead of `docker_compose()` to automatically pass active profiles:
+Use `cc_docker_compose()` instead of `docker_compose()` to automatically:
+1. Set COMPOSE_PROFILES environment variable based on active profiles
+2. Register all services with `dc_resource()` using their labels
 
 ```python
 load('ext://compose_composer', 'cc_docker_compose')
 
 if __file__ == config.main_path:
     master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
-    # Automatically sets COMPOSE_PROFILES environment variable
-    cc_docker_compose(encode_yaml(master))
+
+    # Pass dict directly (not encoded) for automatic service registration
+    cc_docker_compose(master)  # Automatically sets profiles and registers services
+
+    # Legacy pattern (skips auto-registration):
+    # cc_docker_compose(encode_yaml(master))
 ```
+
+**Note:** Pass the dict directly (not encoded) to enable automatic service registration with labels. If you pass an encoded YAML string, profiles will still work but service registration will be skipped.
 
 ## Core Concepts
 
@@ -239,7 +247,7 @@ This is symmetric - grafana defines how it wires to k3s-apiserver, not the other
 
 ### Functions
 
-#### `cc_local_compose(name, compose_path, *dependencies, profiles=[])`
+#### `cc_local_compose(name, compose_path, *dependencies, profiles=[], labels=[])`
 
 Creates a local plugin struct.
 
@@ -248,6 +256,7 @@ Creates a local plugin struct.
 - `compose_path`: Absolute path to compose file (required)
 - `*dependencies`: Varargs of dependency structs this plugin depends on
 - `profiles`: List of profile names this plugin belongs to (optional)
+- `labels`: List of Tilt labels for grouping services in the UI (optional, default: `['dependencies']`)
 
 **Returns:** struct with plugin metadata
 
@@ -255,7 +264,12 @@ Creates a local plugin struct.
 - If `profiles=[]` (empty/default): plugin is always included
 - If `profiles=['dev', 'full']`: plugin is only included when one of these profiles is active
 
-#### `cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[])`
+**Label Behavior:**
+- If `labels=[]` (empty/default): services get `['dependencies']` label
+- If `labels=['app']`: all services from this plugin get the 'app' label in Tilt UI
+- Labels enable Tilt sidebar grouping for better organization
+
+#### `cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[])`
 
 Declare a dependency and load its extension.
 
@@ -267,12 +281,18 @@ Declare a dependency and load its extension.
 - `compose_overrides`: Static overrides dict (optional)
 - `imports`: List of symbol names to bind to the struct (optional)
 - `profiles`: List of profile names this dependency belongs to (optional)
+- `labels`: List of Tilt labels for grouping services in the UI (optional, default: `['dependencies']`)
 
 **Returns:** struct with dependency metadata and bound helpers
 
 **Profile Behavior:**
 - If `profiles=[]` (empty/default): dependency is always included
 - If `profiles=['dev', 'staging']`: dependency is only included when one of these profiles is active
+
+**Label Behavior:**
+- If `labels=[]` (empty/default): services get `['dependencies']` label
+- If `labels=['infra']`: all services from this dependency get the 'infra' label in Tilt UI
+- Labels enable Tilt sidebar grouping for better organization
 
 #### `cc_generate_master_compose(root_plugin, cli_plugins=[], staging_dir=None, modifications=[])`
 
@@ -433,6 +453,105 @@ if 'debug' in profiles:
     print("Debug mode enabled")
 ```
 
+## Tilt Sidebar Grouping with Labels
+
+Labels organize services in the Tilt UI sidebar into collapsible groups, making it easier to navigate environments with many services.
+
+### Assigning Labels to Dependencies
+
+Labels are assigned when declaring dependencies:
+
+```python
+# Infrastructure services
+mysql = cc_dependency(name='mysql', url=DEVENV_URL, labels=['infra'])
+nats = cc_dependency(name='nats', url=DEVENV_URL, labels=['infra'])
+
+# Observability stack
+jaeger = cc_dependency(name='jaeger', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
+loki = cc_dependency(name='loki', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
+
+# Application services
+grafana = cc_dependency(name='grafana', url=DEVENV_URL, labels=['app'])
+
+# Local plugin services
+def cc_get_plugin():
+    return cc_local_compose(
+        'my-plugin',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        mysql, nats, jaeger, loki, grafana,
+        labels=['app'],
+    )
+```
+
+### Automatic Service Registration
+
+When using `cc_docker_compose()`, services are automatically registered with `dc_resource()` using their plugin's labels:
+
+```python
+load('ext://compose_composer', 'cc_docker_compose')
+
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
+
+    # Pass dict directly (not encoded) for automatic service registration
+    cc_docker_compose(master)  # Auto-registers services with labels
+```
+
+This automatically calls `dc_resource(service_name, labels=labels)` for each service.
+
+### Default Label Behavior
+
+- If `labels=[]` (empty/default): services get `['dependencies']` label
+- All services from a plugin/dependency inherit that plugin's labels
+- Services defined in compose files with `profiles:` are only registered if their profiles are active
+
+### Overriding Labels for Specific Services
+
+Some services may need different labels than their plugin default:
+
+```python
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
+    cc_docker_compose(master)
+
+    # Override labels for profile-specific services
+    active_profiles = cc_get_active_profiles()
+    if 'core' in active_profiles or 'full' in active_profiles:
+        dc_resource('api-admin', labels=['admin'])
+
+    if 'full' in active_profiles:
+        dc_resource('advanced-service', labels=['advanced'])
+```
+
+### Common Label Grouping Patterns
+
+| Group | Services | Purpose |
+|-------|----------|---------|
+| `app` | Frontend, API, main application services | Core application |
+| `infra` | Database, message broker, cache | Infrastructure dependencies |
+| `observability` | Jaeger, Loki, Prometheus, Promtail | Monitoring and logging |
+| `admin` | Admin UI, dashboards | Administrative interfaces |
+| `sql-test` | Test databases, data generators | SQL testing environment |
+| `advanced` | Optional features, proxies | Advanced/optional features |
+| `dependencies` | (default) | Unclassified dependencies |
+
+### Profile Interaction
+
+Labels respect docker-compose native profiles. Services with `profiles:` in their compose files are only registered if those profiles are active:
+
+```yaml
+# docker-compose.yaml
+services:
+  api-admin:
+    profiles: ['core', 'full']
+    image: admin-ui
+```
+
+```python
+# Tiltfile
+# api-admin is only registered when 'core' or 'full' profile is active
+```
+
 ## Integration with k3s-apiserver
 
 ### CRD Loading
@@ -535,8 +654,8 @@ if __file__ == config.main_path:
         staging_dir=os.path.dirname(__file__) + '/.compose-stage',
         modifications=[crd_mod],
     )
-    
-    docker_compose(encode_yaml(master))
+
+    cc_docker_compose(master)  # Auto-registers services with labels
 ```
 
 ## Troubleshooting

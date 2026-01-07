@@ -720,6 +720,26 @@ def test_cc_local_compose_with_profiles():
     assert_equals(plugin.profiles, ['dev', 'staging'])
     print("  [PASS] test_cc_local_compose_with_profiles")
 
+def test_cc_local_compose_with_labels():
+    """Test creating cc_local_compose with labels."""
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+        labels=['app'],
+    )
+    assert_equals(plugin.name, 'my-plugin')
+    assert_equals(plugin.labels, ['app'])
+    print("  [PASS] test_cc_local_compose_with_labels")
+
+def test_cc_local_compose_labels_default_empty():
+    """Test that labels default to empty list."""
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+    )
+    assert_equals(plugin.labels, [])
+    print("  [PASS] test_cc_local_compose_labels_default_empty")
+
 def test_flatten_dependency_tree_with_profiles():
     """Test that dependency tree respects profiles."""
     always_included = struct(
@@ -841,6 +861,10 @@ def run_tests():
     test_cc_local_compose_with_profiles()
     test_flatten_dependency_tree_with_profiles()
     test_cc_get_active_profiles()
+
+    print("\n=== Label Tests ===")
+    test_cc_local_compose_with_labels()
+    test_cc_local_compose_labels_default_empty()
     
     print("\n" + "=" * 50)
     print("All tests passed!")
