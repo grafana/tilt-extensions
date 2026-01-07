@@ -590,3 +590,33 @@ Tiltfile                  # Orchestrator
 cd tilt-extensions/compose_composer
 make test
 ```
+
+## Potential Problems with Tilt
+The Tiltfile uses local_resource to run plugin-precache before docker-compose services start, because Tilt doesn't respect docker-compose's `depends_on: service_completed_successfully` conditions.
+
+**Problem:**
+This requires specifying the dependency twice:
+1. In docker-compose.yaml: `depends_on: plugin-precache: condition: service_completed_successfully`
+2. In Tiltfile: local_resource + `resource_deps=['plugin-precache-build']`
+
+This violates DRY principle and creates maintenance burden.
+
+**Attempted Solutions:**
+
+1. **Tilt's wait=True parameter**: Added to `cc_docker_compose()` call, but plugin service still doesn't wait long enough for precache to complete.
+
+2. **Healthcheck approach**: Added healthcheck to plugin-precache service to verify build artifacts exist, changed to `condition: service_healthy`, and made precache stay alive with `tail -f /dev/null`. This still didn't work with Tilt's wait=True.
+
+Both approaches failed to make Tilt properly wait for precache completion. The local_resource workaround remains necessary but requires duplicate dependency specification.
+
+**Desired Solution:**
+Find a way to automatically extract and respect docker-compose dependencies without requiring manual Tiltfile configuration. Options:
+- Parse docker-compose.yaml to extract `depends_on` relationships
+- Create a Tilt extension that wraps docker_compose() and auto-creates local_resources for one-shot services
+- Contribute upstream fix to Tilt to respect docker-compose conditions properly
+
+**Workaround Location:**
+grafana-assistant-app/Tiltfile lines 230-247
+
+**Related Issues:**
+- apiserver-devenv-testing-claude-r74 (original plugin-precache issue)
