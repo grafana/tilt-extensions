@@ -29,7 +29,7 @@ load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate
 allow_k8s_contexts(k8s_context())
 
 # Define dependencies using cc_dependency()
-DEVENV_URL = 'file:///path/to/devenv-compose'
+DEVENV_URL = 'file:///path/to/composables'
 
 k3s = cc_dependency(name='k3s-apiserver', url=DEVENV_URL)
 mysql = cc_dependency(name='mysql', url=DEVENV_URL)
@@ -655,7 +655,7 @@ k3s-apiserver provides a `register_crds()` helper to mount CRD files:
 # Import the helper via cc_dependency()
 k3s = cc_dependency(
     name='k3s-apiserver',
-    url='file:///path/to/devenv-compose',
+    url='file:///path/to/composables',
     imports=['register_crds'],
 )
 
@@ -708,7 +708,7 @@ load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate
 # Core Dependencies
 # ============================================================================
 
-DEVENV_URL = 'file:///shared/devenv-compose'
+DEVENV_URL = 'file:///shared/composables'
 
 k3s = cc_dependency(
     name='k3s-apiserver',

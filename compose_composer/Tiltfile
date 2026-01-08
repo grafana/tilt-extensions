@@ -333,7 +333,7 @@ def cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imp
         # Always included (no profiles), services grouped under 'infra'
         k3s = cc_dependency(
             name='k3s-apiserver',
-            url='file:///path/to/devenv-compose',
+            url='file:///path/to/composables',
             imports=['register_crds'],
             labels=['infra'],
         )
@@ -341,7 +341,7 @@ def cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imp
         # Only included when 'dev' or 'full' profile is active
         mysql = cc_dependency(
             name='mysql',
-            url='file:///path/to/devenv-compose',
+            url='file:///path/to/composables',
             profiles=['dev', 'full'],
             labels=['infra'],
         )
