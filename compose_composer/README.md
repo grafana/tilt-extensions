@@ -69,7 +69,24 @@ def get_wire_when():
 
 Grafana defines its own k3s integration. K3s doesn't need to know about Grafana. This symmetry means plugins can bring their own infrastructure without coordinating with a central orchestrator.
 
+## Table of Contents
+
+- [The Problem: Docker Compose is Too Rigid](#the-problem-docker-compose-is-too-rigid)
+- [The Solution: Runtime Assembly of Composable LEGOs](#the-solution-runtime-assembly-of-composable-legos)
+- [Key Innovation: Symmetric Orchestration](#key-innovation-symmetric-orchestration)
+- [Quick Start](#quick-start)
+- [Usage Examples](#usage-examples)
+- [Core Concepts](#core-concepts)
+- [API Reference](#api-reference)
+- [Profiles](#profiles)
+- [Tilt Sidebar Grouping with Labels](#tilt-sidebar-grouping-with-labels)
+- [Integration with k3s-apiserver](#integration-with-k3s-apiserver)
+- [Troubleshooting](#troubleshooting)
+- [Known Issues with Tilt](#known-issues-with-tilt)
+
 ## Quick Start
+
+> **Prerequisites**: This guide assumes you have [Tilt](https://tilt.dev) installed and familiarity with Docker Compose. The examples use the [grafana/devenv-compose](https://github.com/grafana/devenv-compose) composables repository.
 
 ### Basic Orchestrator
 
@@ -1384,8 +1401,11 @@ cd tilt-extensions/compose_composer
 make test
 ```
 
-## Potential Problems with Tilt
-The Tiltfile uses local_resource to run plugin-precache before docker-compose services start, because Tilt doesn't respect docker-compose's `depends_on: service_completed_successfully` conditions.
+## Known Issues with Tilt
+
+### Problem: Tilt Doesn't Respect docker-compose Completion Conditions
+
+Some Tiltfiles use `local_resource` to run one-shot services (like plugin-precache) before docker-compose services start, because Tilt doesn't respect docker-compose's `depends_on: service_completed_successfully` conditions.
 
 **Problem:**
 This requires specifying the dependency twice:
