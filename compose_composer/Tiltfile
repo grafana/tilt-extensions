@@ -211,6 +211,24 @@ def cc_local_compose(name, compose_path, *dependencies, **kwargs):
         labels: List of Tilt labels for grouping services in the UI (optional)
                 If empty, defaults to ['dependencies'] for automatic dc_resource labeling
                 Example: labels=['app'] groups all services under 'app' in Tilt sidebar
+        modifications: List of modification dicts from helper function calls (optional)
+                      Declare helper-based modifications here to enable symmetric
+                      orchestration (works as orchestrator OR CLI plugin).
+
+                      Example - single helper:
+                          modifications=[
+                              k3s.register_crds(crd_paths=['./definitions']),
+                          ]
+
+                      Example - multiple helpers, multiple dependencies:
+                          modifications=[
+                              k3s.register_crds(crd_paths=['./crds']),
+                              k3s.configure_apiserver(flags=['--verbose']),
+                              mysql.create_database(name='myapp'),
+                          ]
+
+                      These modifications are applied in ALL modes (orchestrator
+                      and CLI plugin), enabling true symmetric orchestration.
 
     Returns:
         struct with:
@@ -219,6 +237,7 @@ def cc_local_compose(name, compose_path, *dependencies, **kwargs):
           - dependencies: List of dependency structs
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
+          - modifications: List of modification dicts
           - _is_local: True (marker for local plugins)
 
     Example:
@@ -238,15 +257,34 @@ def cc_local_compose(name, compose_path, *dependencies, **kwargs):
                 profiles=['dev', 'full'],
                 labels=['admin'],
             )
+
+        # With helper-based modifications
+        def cc_get_plugin():
+            return cc_local_compose(
+                'service-model',
+                os.path.dirname(__file__) + '/docker-compose.yaml',
+                k3s, mysql, grafana,
+                labels=['app'],
+                modifications=[
+                    k3s.register_crds(crd_paths=['definitions']),
+                ],
+            )
     """
     profiles = kwargs.get('profiles', [])
     labels = kwargs.get('labels', [])
+    modifications = kwargs.get('modifications', [])
+
+    # Validate modifications is a list
+    if type(modifications) != 'list':
+        fail("modifications must be a list, got: " + str(type(modifications)))
+
     return struct(
         name=name,
         compose_path=compose_path,
         dependencies=list(dependencies),
         profiles=profiles,
         labels=labels,
+        modifications=modifications,
         compose_overrides={},
         _symbols={},
         _is_local=True,
