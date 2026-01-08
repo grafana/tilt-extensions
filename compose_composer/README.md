@@ -867,6 +867,409 @@ if __file__ == config.main_path:
 
 When multiple plugins bring CRDs, they are all merged into the single `crd-loader` service.
 
+## Usage Examples
+
+This section demonstrates key capabilities with realistic, copy-pasteable examples.
+
+### Example 1: Transitive Dependencies
+
+**Scenario**: Your plugin needs Grafana, which automatically brings MySQL as a transitive dependency.
+
+```python
+# my-dashboard-plugin/Tiltfile
+
+# Load compose_composer
+v1alpha1.extension_repo(name='devenv', url='https://github.com/grafana/devenv-compose')
+v1alpha1.extension(name='compose_composer', repo_name='devenv', repo_path='compose_composer')
+load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_docker_compose')
+
+allow_k8s_contexts(k8s_context())
+
+# Declare only what you need directly - Grafana brings MySQL automatically
+grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'dashboard-plugin',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        grafana,  # MySQL is automatically included as transitive dep
+        labels=['app'],
+    )
+
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), [])
+    cc_docker_compose(master)
+```
+
+**Output**:
+```
+Flattening dependency tree:
+  Total dependencies: 3
+    - mysql (from grafana's dependencies)
+    - grafana
+    - dashboard-plugin (local)
+```
+
+### Example 2: CLI Plugins - Runtime Composition
+
+**Scenario**: Run multiple plugins together without modifying code.
+
+```bash
+# Start with just your plugin
+tilt up
+
+# Add another plugin from a sibling directory
+tilt up -- ../monitoring-plugin
+
+# Add plugins by name (looked up in parent directory)
+tilt up -- monitoring-plugin analytics-plugin
+
+# Mix plugins with profiles
+tilt up -- --profile=dev monitoring-plugin
+
+# Use fully qualified paths
+tilt up -- /absolute/path/to/plugin
+
+# Load from git repositories
+tilt up -- https://github.com/myorg/shared-plugin.git
+```
+
+Each CLI plugin brings its own dependencies, which are automatically de-duplicated:
+
+```python
+# monitoring-plugin also needs grafana
+# Result: Only one grafana instance, deps merged
+```
+
+### Example 3: Profile-Based Composition
+
+**Scenario**: Different environments need different dependencies.
+
+```python
+# analytics-service/Tiltfile
+
+# Core infrastructure (always included)
+grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+
+# Development tools (only in dev/full profiles)
+jaeger = cc_composable(
+    name='jaeger',
+    url='https://github.com/grafana/devenv-compose',
+    profiles=['dev', 'full'],
+    labels=['observability'],
+)
+
+# SQL test databases (only in sql/full profiles)
+clickhouse = cc_composable(
+    name='clickhouse',
+    url='https://github.com/grafana/devenv-compose',
+    profiles=['sql', 'full'],
+    labels=['sql-test'],
+)
+
+postgres = cc_composable(
+    name='postgres-test',
+    url='https://github.com/grafana/devenv-compose',
+    profiles=['sql', 'full'],
+    labels=['sql-test'],
+)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'analytics-service',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        grafana, jaeger, clickhouse, postgres,
+        labels=['app'],
+    )
+
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), cc_parse_cli_plugins(os.path.dirname(__file__)))
+    cc_docker_compose(master)
+```
+
+**Usage**:
+```bash
+# Minimal (just grafana)
+tilt up
+
+# Development with observability
+tilt up -- --profile=dev
+
+# SQL testing
+tilt up -- --profile=sql
+
+# Everything
+tilt up -- --profile=full
+```
+
+### Example 4: Override Resolution with compose_overrides()
+
+**Scenario**: Customize infrastructure components for your plugin's needs.
+
+```python
+# service-model/Tiltfile
+
+k3s = cc_composable(
+    name='k3s-apiserver',
+    url='https://github.com/grafana/devenv-compose',
+    imports=['register_crds'],
+    labels=['k8s'],
+)
+
+mysql = cc_composable(
+    name='mysql',
+    url='https://github.com/grafana/devenv-compose',
+    labels=['infra'],
+)
+
+grafana = cc_composable(
+    name='grafana',
+    url='https://github.com/grafana/devenv-compose',
+    labels=['app'],
+)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'service-model',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        k3s, mysql, grafana,
+        labels=['app'],
+        modifications=[
+            # Register CRDs from your plugin
+            k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
+
+            # Increase MySQL connections for your workload
+            mysql.compose_overrides({
+                'services': {
+                    'db': {
+                        'command': '--max_connections=1000',
+                        'environment': {
+                            'MYSQL_MAX_ALLOWED_PACKET': '256M',
+                        },
+                    },
+                },
+            }),
+
+            # Configure Grafana to use k8s aggregated API
+            grafana.compose_overrides({
+                'services': {
+                    'grafana': {
+                        'environment': {
+                            'GF_GRAFANA_APISERVER_REMOTE_SERVICES_FILE': '/etc/kubernetes/pki/aggregator-config.yaml',
+                            'GF_LOG_LEVEL': 'debug',
+                        },
+                    },
+                },
+            }),
+        ],
+    )
+
+if __file__ == config.main_path:
+    master = cc_generate_master_compose(cc_get_plugin(), cc_parse_cli_plugins(os.path.dirname(__file__)))
+    cc_docker_compose(master)
+```
+
+**Key Points**:
+- Modifications are declared in `cc_get_plugin()` - works as orchestrator OR CLI plugin
+- Multiple modifications to same dependency are merged
+- Overrides are type-safe and IDE-friendly
+
+### Example 5: Wire-When Rules for Smart Integration
+
+**Scenario**: Your composable knows how to integrate with other components when they're present.
+
+```python
+# In your composable's Tiltfile (e.g., grafana/Tiltfile)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'grafana',
+        os.path.dirname(__file__) + '/grafana.yaml',
+        # ... dependencies ...
+    )
+
+def get_wire_when():
+    """
+    Define how grafana should wire itself to other components.
+    These rules only activate when the trigger component is present.
+    """
+    return {
+        'k3s-apiserver': {
+            # When k3s is present, wire grafana to it
+            'services': {
+                'grafana': {
+                    'depends_on': ['k3s-apiserver'],
+                    'volumes': [
+                        'k3s-certs:/etc/kubernetes/pki:ro',
+                        'k3s-output:/etc/grafana:ro',
+                    ],
+                    'environment': {
+                        'KUBECONFIG': '/etc/grafana/kubeconfig.yaml',
+                        'GF_GRAFANA_APISERVER_HOST': 'https://k3s-apiserver:6443',
+                    },
+                },
+            },
+        },
+        'nats': {
+            # When nats is present, configure grafana to use it
+            'services': {
+                'grafana': {
+                    'depends_on': ['nats'],
+                    'environment': {
+                        'GF_NATS_SERVER': 'nats://nats:4222',
+                    },
+                },
+            },
+        },
+        'jaeger': {
+            # When jaeger is present, configure grafana's tracing
+            'services': {
+                'grafana': {
+                    'environment': {
+                        'JAEGER_AGENT_HOST': 'jaeger',
+                        'JAEGER_AGENT_PORT': '6831',
+                    },
+                },
+            },
+        },
+    }
+```
+
+**Result**: Grafana automatically configures itself based on what else is in the environment. No central coordination needed!
+
+### Example 6: Bound Helper Functions
+
+**Scenario**: Create reusable configuration functions for your composable.
+
+```python
+# In k3s-apiserver/Tiltfile
+
+def register_crds(crd_paths):
+    """
+    Helper function that plugins can call to register CRD directories.
+    Returns compose_overrides for mounting CRD paths into crd-loader service.
+    """
+    if type(crd_paths) != 'list':
+        fail("crd_paths must be a list")
+
+    volumes = []
+    for path in crd_paths:
+        # Generate unique volume mount for each CRD path
+        path_hash = str(hash(path))[-6:]
+        mount_path = '/crds/crds-' + path_hash
+        volumes.append(path + ':' + mount_path + ':ro')
+
+    return {
+        'services': {
+            'crd-loader': {
+                'volumes': volumes,
+            },
+        },
+    }
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'k3s-apiserver',
+        os.path.dirname(__file__) + '/k3s-apiserver.yaml',
+    )
+
+# In your plugin's Tiltfile
+k3s = cc_composable(
+    name='k3s-apiserver',
+    url='https://github.com/grafana/devenv-compose',
+    imports=['register_crds'],  # Bind this helper
+)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'my-operator',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        k3s,
+        modifications=[
+            # Call bound helper - it knows its target automatically
+            k3s.register_crds(crd_paths=[
+                os.path.dirname(__file__) + '/crds',
+                os.path.dirname(__file__) + '/definitions',
+            ]),
+        ],
+    )
+```
+
+**Benefits**:
+- Encapsulates complex logic in the composable
+- Type-safe API with autocomplete
+- Automatically targets the correct dependency
+
+### Example 7: Plugin-Declared Modifications (Symmetric Orchestration)
+
+**Scenario**: Your plugin should work the same whether it's the orchestrator or a CLI plugin.
+
+```python
+# service-model/Tiltfile - Works in BOTH modes
+
+k3s = cc_composable(
+    name='k3s-apiserver',
+    url='https://github.com/grafana/devenv-compose',
+    imports=['register_crds'],
+)
+
+grafana = cc_composable(
+    name='grafana',
+    url='https://github.com/grafana/devenv-compose',
+)
+
+def cc_get_plugin():
+    """
+    This function is called in ALL modes:
+    - When service-model is orchestrator (tilt up in this directory)
+    - When service-model is CLI plugin (tilt up -- service-model from elsewhere)
+
+    Modifications declared here work in BOTH cases!
+    """
+    return cc_local_composable(
+        'service-model',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        k3s, grafana,
+        labels=['app'],
+        modifications=[
+            # These modifications travel with the plugin
+            k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
+
+            grafana.compose_overrides({
+                'services': {
+                    'grafana': {
+                        'environment': {
+                            'GF_CUSTOM_SETTING': 'value',
+                        },
+                    },
+                },
+            }),
+        ],
+    )
+
+if __file__ == config.main_path:
+    # Orchestrator mode - just pass through to compose_composer
+    master = cc_generate_master_compose(
+        cc_get_plugin(),  # Plugin brings its own modifications
+        cc_parse_cli_plugins(os.path.dirname(__file__)),
+        modifications=[],  # Usually empty - plugins declare their own
+    )
+    cc_docker_compose(master)
+```
+
+**Test both modes**:
+```bash
+# Mode 1: service-model as orchestrator
+cd service-model
+tilt up
+
+# Mode 2: service-model as CLI plugin
+cd other-plugin
+tilt up -- ../service-model
+
+# In both cases, service-model's CRDs are loaded and Grafana is configured!
+```
+
 ## Complete Example
 
 ### Plugin with Dependencies and CRDs
