@@ -432,7 +432,6 @@ Extensions should export these functions:
 |----------|----------|-------------|
 | `cc_get_plugin()` | Yes | Returns plugin struct (name, compose_path, dependencies) |
 | `get_wire_when()` | No | Returns conditional wiring rules |
-| `get_provides()` | No | Documents what this extension provides |
 | `get_compose_path()` | Legacy | Returns path to compose file (for backward compat) |
 
 ### Compose Overrides

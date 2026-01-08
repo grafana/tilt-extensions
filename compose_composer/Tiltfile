@@ -37,7 +37,6 @@
 # Extension exports:
 #   cc_get_plugin() -> struct         - Returns plugin struct from cc_local_compose (required)
 #   get_wire_when() -> dict           - Conditional wiring rules (optional)
-#   get_provides() -> dict            - What this extension provides (optional, for docs)
 #   get_compose_path() -> str         - Legacy: Returns path to compose file (fallback)
 
 # ============================================================================
