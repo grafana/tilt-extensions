@@ -23,21 +23,21 @@ Compose Composer enables you to build development environments from composable p
 # Load compose_composer
 v1alpha1.extension_repo(name='tilt-extensions', url='file:///path/to/tilt-extensions')
 v1alpha1.extension(name='compose_composer', repo_name='tilt-extensions', repo_path='compose_composer')
-load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
+load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
 
 # Allow any k8s context (we're only using docker-compose)
 allow_k8s_contexts(k8s_context())
 
-# Define dependencies using cc_dependency()
+# Define dependencies using cc_composable()
 DEVENV_URL = 'file:///path/to/composables'
 
-k3s = cc_dependency(name='k3s-apiserver', url=DEVENV_URL)
-mysql = cc_dependency(name='mysql', url=DEVENV_URL)
-grafana = cc_dependency(name='grafana', url=DEVENV_URL)
+k3s = cc_composable(name='k3s-apiserver', url=DEVENV_URL)
+mysql = cc_composable(name='mysql', url=DEVENV_URL)
+grafana = cc_composable(name='grafana', url=DEVENV_URL)
 
 # Define your plugin with its compose file and dependencies
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'my-plugin',
         os.path.dirname(__file__) + '/docker-compose.yaml',
         k3s, mysql, grafana,  # Dependencies as varargs
@@ -88,14 +88,14 @@ compose_composer supports a **unified profile model** where profiles control bot
 
 ```python
 # Only loaded when 'core' or 'full' profile is active
-mysql = cc_dependency(
+mysql = cc_composable(
     name='mysql',
     url=DEVENV_URL,
     profiles=['core', 'full'],
 )
 
 # Always loaded (no profile restrictions)
-grafana = cc_dependency(name='grafana', url=DEVENV_URL)
+grafana = cc_composable(name='grafana', url=DEVENV_URL)
 ```
 
 **Using profiles in compose files:**
@@ -138,30 +138,30 @@ if __file__ == config.main_path:
 
 Everything in compose_composer is a **plugin struct**. There are two ways to create one:
 
-1. **Remote dependencies** via `cc_dependency()` - Loads an extension from a repo
-2. **Local plugins** via `cc_local_compose()` - Defines a local plugin with its compose file
+1. **Remote dependencies** via `cc_composable()` - Loads an extension from a repo
+2. **Local plugins** via `cc_local_composable()` - Defines a local plugin with its compose file
 
 Both return structs that can be passed to `cc_generate_master_compose()`.
 
-### The `cc_local_compose()` Function
+### The `cc_local_composable()` Function
 
 Creates a plugin struct for your local compose file:
 
 ```python
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'my-plugin',                                    # Plugin name
         os.path.dirname(__file__) + '/docker-compose.yaml',  # Compose file path
         k3s, mysql, grafana,                            # Dependencies (varargs)
     )
 ```
 
-### The `cc_dependency()` Function
+### The `cc_composable()` Function
 
 Loads a remote extension and returns a plugin struct:
 
 ```python
-k3s = cc_dependency(
+k3s = cc_composable(
     name='k3s-apiserver',           # Extension name (required)
     url='file:///path/to/repo',     # Extension repo URL (required)
     ref='main',                      # Git ref for https:// URLs (optional)
@@ -179,10 +179,10 @@ Every extension should export a `cc_get_plugin()` function:
 
 ```python
 # grafana/Tiltfile
-load('ext://compose_composer', 'cc_local_compose')
+load('ext://compose_composer', 'cc_local_composable')
 
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'grafana',
         os.path.dirname(__file__) + '/grafana.yaml',
     )
@@ -197,7 +197,7 @@ The `cc_` prefix ensures there are no naming collisions with your own functions.
 When you import a helper function via `imports=[]`, it's bound to the dependency struct:
 
 ```python
-k3s = cc_dependency(
+k3s = cc_composable(
     name='k3s-apiserver',
     url='...',
     imports=['register_crds'],
@@ -229,7 +229,7 @@ if __file__ == config.main_path:
 ```python
 # In cc_get_plugin() - works as orchestrator OR CLI plugin
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'my-plugin',
         compose_path,
         k3s, mysql,
@@ -251,19 +251,19 @@ See [Plugin-Declared Modifications](#plugin-declared-modifications-recommended) 
 # service-model/Tiltfile
 
 # Load dependencies
-k3s = cc_dependency(
+k3s = cc_composable(
     name='k3s-apiserver',
     url=DEVENV_URL,
     imports=['register_crds'],
     labels=['k8s'],
 )
 
-mysql = cc_dependency(name='mysql', url=DEVENV_URL, labels=['infra'])
-grafana = cc_dependency(name='grafana', url=DEVENV_URL, labels=['app'])
+mysql = cc_composable(name='mysql', url=DEVENV_URL, labels=['infra'])
+grafana = cc_composable(name='grafana', url=DEVENV_URL, labels=['app'])
 
 # Declare modifications IN the plugin definition
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'service-model',
         os.path.dirname(__file__) + '/docker-compose.yaml',
         k3s, mysql, grafana,
@@ -298,7 +298,7 @@ if __file__ == config.main_path:
 
 compose_composer collects modifications from two sources:
 
-1. **Plugin-declared** (from `cc_local_compose.modifications`):
+1. **Plugin-declared** (from `cc_local_composable.modifications`):
    - Collected from root_plugin and all cli_plugins
    - Applied first (define requirements)
    - Enable symmetric orchestration
@@ -336,7 +336,7 @@ This is symmetric - grafana defines how it wires to k3s-apiserver, not the other
 
 ### Functions
 
-#### `cc_local_compose(name, compose_path, *dependencies, profiles=[], labels=[], modifications=[])`
+#### `cc_local_composable(name, compose_path, *dependencies, profiles=[], labels=[], modifications=[])`
 
 Creates a local plugin struct.
 
@@ -362,7 +362,7 @@ Creates a local plugin struct.
 - If `labels=['app']`: all services from this plugin get the 'app' label in Tilt UI
 - Labels enable Tilt sidebar grouping for better organization
 
-#### `cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[])`
+#### `cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[])`
 
 Declare a dependency and load its extension.
 
@@ -392,7 +392,7 @@ Declare a dependency and load its extension.
 Assembles a dependency tree into a master compose file.
 
 **Arguments:**
-- `root_plugin`: The root plugin struct from `cc_local_compose()` or `cc_get_plugin()`
+- `root_plugin`: The root plugin struct from `cc_local_composable()` or `cc_get_plugin()`
 - `cli_plugins`: List of additional plugin structs from `cc_parse_cli_plugins()`
 - `staging_dir`: Directory for modified compose files (default: `.compose-stage/`)
 - `modifications`: List of modification dicts returned by helper functions
@@ -439,7 +439,7 @@ Extensions should export these functions:
 Static modifications to a dependency's compose file:
 
 ```python
-grafana = cc_dependency(
+grafana = cc_composable(
     name='grafana',
     url='...',
     compose_overrides={
@@ -472,18 +472,18 @@ Assign profiles to dependencies when declaring them:
 
 ```python
 # Always included (no profiles)
-k3s = cc_dependency(name='k3s-apiserver', url=DEVENV_URL)
-grafana = cc_dependency(name='grafana', url=DEVENV_URL)
+k3s = cc_composable(name='k3s-apiserver', url=DEVENV_URL)
+grafana = cc_composable(name='grafana', url=DEVENV_URL)
 
 # Only included when 'dev' or 'full' profile is active
-mysql = cc_dependency(name='mysql', url=DEVENV_URL, profiles=['dev', 'full'])
+mysql = cc_composable(name='mysql', url=DEVENV_URL, profiles=['dev', 'full'])
 
 # Only included when 'full' profile is active
-redis = cc_dependency(name='redis', url=DEVENV_URL, profiles=['full'])
+redis = cc_composable(name='redis', url=DEVENV_URL, profiles=['full'])
 
 # Local plugin with profiles
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'debug-tools',
         os.path.dirname(__file__) + '/debug.yaml',
         profiles=['dev', 'debug'],
@@ -555,19 +555,19 @@ Labels are assigned when declaring dependencies:
 
 ```python
 # Infrastructure services
-mysql = cc_dependency(name='mysql', url=DEVENV_URL, labels=['infra'])
-nats = cc_dependency(name='nats', url=DEVENV_URL, labels=['infra'])
+mysql = cc_composable(name='mysql', url=DEVENV_URL, labels=['infra'])
+nats = cc_composable(name='nats', url=DEVENV_URL, labels=['infra'])
 
 # Observability stack
-jaeger = cc_dependency(name='jaeger', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
-loki = cc_dependency(name='loki', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
+jaeger = cc_composable(name='jaeger', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
+loki = cc_composable(name='loki', url=DEVENV_URL, profiles=['core', 'full'], labels=['observability'])
 
 # Application services
-grafana = cc_dependency(name='grafana', url=DEVENV_URL, labels=['app'])
+grafana = cc_composable(name='grafana', url=DEVENV_URL, labels=['app'])
 
 # Local plugin services
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'my-plugin',
         os.path.dirname(__file__) + '/docker-compose.yaml',
         mysql, nats, jaeger, loki, grafana,
@@ -651,18 +651,18 @@ services:
 k3s-apiserver provides a `register_crds()` helper to mount CRD files:
 
 ```python
-# Import the helper via cc_dependency()
-k3s = cc_dependency(
+# Import the helper via cc_composable()
+k3s = cc_composable(
     name='k3s-apiserver',
     url='file:///path/to/composables',
     imports=['register_crds'],
 )
 
-mysql = cc_dependency(name='mysql', url='...')
-grafana = cc_dependency(name='grafana', url='...')
+mysql = cc_composable(name='mysql', url='...')
+grafana = cc_composable(name='grafana', url='...')
 
 def cc_get_plugin():
-    return cc_local_compose(
+    return cc_local_composable(
         'my-operator',
         os.path.dirname(__file__) + '/docker-compose.yaml',
         k3s, mysql, grafana,
@@ -701,7 +701,7 @@ allow_k8s_contexts(k8s_context())
 # Load compose_composer
 v1alpha1.extension_repo(name='tilt-ext', url='file:///shared/tilt-extensions')
 v1alpha1.extension(name='compose_composer', repo_name='tilt-ext', repo_path='compose_composer')
-load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
+load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
 
 # ============================================================================
 # Core Dependencies
@@ -709,14 +709,14 @@ load('ext://compose_composer', 'cc_dependency', 'cc_local_compose', 'cc_generate
 
 DEVENV_URL = 'file:///shared/composables'
 
-k3s = cc_dependency(
+k3s = cc_composable(
     name='k3s-apiserver',
     url=DEVENV_URL,
     imports=['register_crds'],
 )
 
-mysql = cc_dependency(name='mysql', url=DEVENV_URL)
-grafana = cc_dependency(name='grafana', url=DEVENV_URL)
+mysql = cc_composable(name='mysql', url=DEVENV_URL)
+grafana = cc_composable(name='grafana', url=DEVENV_URL)
 
 # ============================================================================
 # Plugin Definition
@@ -724,7 +724,7 @@ grafana = cc_dependency(name='grafana', url=DEVENV_URL)
 
 def cc_get_plugin():
     """Returns this plugin's struct for compose_composer."""
-    return cc_local_compose(
+    return cc_local_composable(
         'my-operator',
         os.path.dirname(__file__) + '/docker-compose.yaml',
         k3s, mysql, grafana,
@@ -754,7 +754,7 @@ if __file__ == config.main_path:
 
 ### "extensions already registered" error
 
-This can happen if an extension is registered twice. The `cc_dependency()` function handles this automatically by using unique repo names.
+This can happen if an extension is registered twice. The `cc_composable()` function handles this automatically by using unique repo names.
 
 ### Compose overrides not applying
 
