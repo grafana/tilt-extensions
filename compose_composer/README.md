@@ -436,7 +436,11 @@ Extensions should export these functions:
 
 ### Compose Overrides
 
-Static modifications to a dependency's compose file:
+There are three ways to specify compose overrides for dependencies:
+
+#### 1. Parameter-Level Overrides (at Load Time)
+
+Static modifications specified when declaring the dependency:
 
 ```python
 grafana = cc_composable(
@@ -448,19 +452,138 @@ grafana = cc_composable(
                 'environment': {
                     'MY_CUSTOM_VAR': 'value',
                 },
-                'labels': {
-                    'managed-by': 'my-orchestrator',
-                },
             },
         },
     },
 )
 ```
 
-Overrides are deep-merged:
+**Best for:** Simple, static overrides that don't need orchestrator context.
+
+#### 2. compose_overrides() Method (Recommended)
+
+Every composable struct has a bound `compose_overrides()` method that returns a modification dict:
+
+```python
+# Compact declaration at top
+mysql = cc_composable(name='mysql', url=COMPOSABLES_URL)
+grafana = cc_composable(name='grafana', url=COMPOSABLES_URL)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'my-app',
+        compose_path,
+        mysql, grafana,
+        modifications=[
+            # Group all overrides here
+            mysql.compose_overrides({
+                'services': {
+                    'db': {
+                        'environment': {
+                            'MYSQL_ROOT_PASSWORD': 'secret',
+                        },
+                    },
+                },
+            }),
+            grafana.compose_overrides({
+                'services': {
+                    'grafana': {
+                        'volumes': [
+                            './config:/etc/grafana',
+                        ],
+                    },
+                },
+            }),
+        ],
+    )
+```
+
+**Best for:** Most use cases - cleaner code organization, overrides that need orchestrator context (paths, env vars).
+
+**Benefits:**
+- Compact composable declarations
+- All overrides grouped in one place
+- Clear separation of dependencies vs configuration
+- Works as orchestrator OR CLI plugin
+
+#### 3. Custom Helper Functions (via imports)
+
+For reusable, complex configuration logic:
+
+```python
+# In mysql/Tiltfile
+def configure_database(password, max_connections):
+    return {
+        'services': {
+            'db': {
+                'environment': {'MYSQL_ROOT_PASSWORD': password},
+                'command': '--max_connections=' + str(max_connections),
+            },
+        },
+    }
+
+# In orchestrator
+mysql = cc_composable(name='mysql', url=COMPOSABLES_URL, imports=['configure_database'])
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'my-app',
+        compose_path,
+        mysql,
+        modifications=[
+            mysql.configure_database('secret', 1000),
+        ],
+    )
+```
+
+**Best for:** Complex configuration logic that needs to be reusable across orchestrators.
+
+#### Merging Behavior
+
+When both parameter and method overrides are specified, they deep-merge with the method having higher precedence:
+
+```python
+mysql = cc_composable(
+    name='mysql',
+    url=COMPOSABLES_URL,
+    compose_overrides={
+        'services': {
+            'db': {
+                'environment': {
+                    'VAR1': 'from_parameter',
+                    'COMMON': 'parameter_value',
+                },
+            },
+        },
+    },
+)
+
+def cc_get_plugin():
+    return cc_local_composable(
+        'my-app',
+        compose_path,
+        mysql,
+        modifications=[
+            mysql.compose_overrides({
+                'services': {
+                    'db': {
+                        'environment': {
+                            'VAR2': 'from_method',
+                            'COMMON': 'method_wins',  # Overwrites parameter
+                        },
+                    },
+                },
+            }),
+        ],
+    )
+
+# Result: VAR1='from_parameter', VAR2='from_method', COMMON='method_wins'
+```
+
+All overrides are deep-merged:
 - Dicts are merged recursively
 - Lists are concatenated (avoiding duplicates)
-- Scalars are replaced
+- Scalars are replaced (last wins)
 
 ## Profiles
 
