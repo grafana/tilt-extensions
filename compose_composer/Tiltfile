@@ -802,7 +802,7 @@ def _struct_to_dict(dep_struct):
     """
     result = {
         'name': dep_struct.name,
-        '_compose_overrides_param': dep_struct._compose_overrides_param,
+        '_compose_overrides_param': getattr(dep_struct, '_compose_overrides_param', {}),
         'profiles': getattr(dep_struct, 'profiles', []),
         'labels': getattr(dep_struct, 'labels', []),
         'modifications': getattr(dep_struct, 'modifications', []),

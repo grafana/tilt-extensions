@@ -138,7 +138,7 @@ def test_cc_local_composable_with_dependencies():
         ref=None,
         repo_path='dep1',
         compose_path='/path/dep1.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -150,7 +150,7 @@ def test_cc_local_composable_with_dependencies():
         ref=None,
         repo_path='dep2',
         compose_path='/path/dep2.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -175,7 +175,7 @@ def test_flatten_dependency_tree_simple():
         ref=None,
         repo_path='dep1',
         compose_path='/path/dep1.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -199,7 +199,7 @@ def test_flatten_dependency_tree_nested():
         ref=None,
         repo_path='inner',
         compose_path='/path/inner.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -212,7 +212,7 @@ def test_flatten_dependency_tree_nested():
         ref=None,
         repo_path='outer',
         compose_path='/path/outer.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[dep_inner],
         _symbols={},
         _from_cli=False,
@@ -237,7 +237,7 @@ def test_flatten_dependency_tree_deduplicates():
         ref=None,
         repo_path='shared',
         compose_path='/path/shared.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -250,7 +250,7 @@ def test_flatten_dependency_tree_deduplicates():
         ref=None,
         repo_path='dep1',
         compose_path='/path/dep1.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[shared_dep],
         _symbols={},
         _from_cli=False,
@@ -263,7 +263,7 @@ def test_flatten_dependency_tree_deduplicates():
         ref=None,
         repo_path='dep2',
         compose_path='/path/dep2.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[shared_dep],
         _symbols={},
         _from_cli=False,
@@ -288,7 +288,7 @@ def test_flatten_dependency_tree_with_cli_plugins():
         ref=None,
         repo_path='dep1',
         compose_path='/path/dep1.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=False,
@@ -301,7 +301,7 @@ def test_flatten_dependency_tree_with_cli_plugins():
         ref=None,
         repo_path='cli-plugin',
         compose_path='/path/cli.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         _symbols={},
         _from_cli=True,
@@ -595,14 +595,14 @@ def test_struct_to_dict_preserves_compose_overrides():
         ref=None,
         repo_path='test',
         compose_path='/path/compose.yaml',
-        compose_overrides=overrides,
+        _compose_overrides_param=overrides,
         dependencies=[],
         _symbols={},
         _from_cli=True,
         _is_local=False,
     )
     result = struct_to_dict(s)
-    assert_equals(result['compose_overrides']['services']['svc']['environment']['VAR'], 'val')
+    assert_equals(result['_compose_overrides_param']['services']['svc']['environment']['VAR'], 'val')
     print("  [PASS] test_struct_to_dict_preserves_compose_overrides")
 
 # ============================================================================
@@ -612,8 +612,8 @@ def test_struct_to_dict_preserves_compose_overrides():
 def test_apply_modifications_single():
     """Test applying a single modification."""
     deps = [
-        {'name': 'k3s-apiserver', 'url': 'file:///path', 'compose_overrides': {}},
-        {'name': 'mysql', 'url': 'file:///path', 'compose_overrides': {}},
+        {'name': 'k3s-apiserver', 'url': 'file:///path', '_compose_overrides_param': {}},
+        {'name': 'mysql', 'url': 'file:///path', '_compose_overrides_param': {}},
     ]
     mods = [
         {
@@ -622,35 +622,35 @@ def test_apply_modifications_single():
         },
     ]
     apply_modifications(deps, mods)
-    assert_in('services', deps[0]['compose_overrides'])
-    assert_in('crd-loader', deps[0]['compose_overrides']['services'])
+    assert_in('services', deps[0]['_compose_overrides_param'])
+    assert_in('crd-loader', deps[0]['_compose_overrides_param']['services'])
     print("  [PASS] test_apply_modifications_single")
 
 def test_apply_modifications_multiple_same_target():
     """Test applying multiple modifications to the same target."""
     deps = [
-        {'name': 'k3s-apiserver', 'url': 'file:///path', 'compose_overrides': {}},
+        {'name': 'k3s-apiserver', 'url': 'file:///path', '_compose_overrides_param': {}},
     ]
     mods = [
         {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/path1:/crds/p1:ro']}}},
         {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/path2:/crds/p2:ro']}}},
     ]
     apply_modifications(deps, mods)
-    volumes = deps[0]['compose_overrides']['services']['crd-loader']['volumes']
+    volumes = deps[0]['_compose_overrides_param']['services']['crd-loader']['volumes']
     assert_equals(len(volumes), 2, "Both modifications should be merged")
     print("  [PASS] test_apply_modifications_multiple_same_target")
 
 def test_apply_modifications_missing_target():
     """Test that modifications with missing targets are skipped."""
     deps = [
-        {'name': 'mysql', 'url': 'file:///path', 'compose_overrides': {}},
+        {'name': 'mysql', 'url': 'file:///path', '_compose_overrides_param': {}},
     ]
     mods = [
         {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['/crds:/crds:ro']}}},
     ]
     # Should not fail, just skip
     apply_modifications(deps, mods)
-    assert_equals(deps[0]['compose_overrides'], {}, "Should not be modified")
+    assert_equals(deps[0]['_compose_overrides_param'], {}, "Should not be modified")
     print("  [PASS] test_apply_modifications_missing_target")
 
 # ============================================================================
@@ -805,7 +805,7 @@ def test_flatten_dependency_tree_with_profiles():
         ref=None,
         repo_path='always',
         compose_path='/path/always.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         profiles=[],  # No profiles = always included
         _symbols={},
@@ -819,7 +819,7 @@ def test_flatten_dependency_tree_with_profiles():
         ref=None,
         repo_path='dev-only',
         compose_path='/path/dev.yaml',
-        compose_overrides={},
+        _compose_overrides_param={},
         dependencies=[],
         profiles=['dev'],  # Only in dev
         _symbols={},
@@ -850,6 +850,51 @@ def test_cc_get_active_profiles():
     profiles = cc_get_active_profiles()
     assert_true(type(profiles) == 'list', "Should return a list")
     print("  [PASS] test_cc_get_active_profiles")
+
+# ============================================================================
+# compose_overrides Method Tests
+# ============================================================================
+
+def test_compose_overrides_method_exists_on_local():
+    """Test that compose_overrides() method exists on local composables."""
+    local = cc_local_composable(
+        'test-local',
+        os.path.dirname(__file__) + '/test-compose.yaml',
+    )
+
+    assert_true(hasattr(local, 'compose_overrides'), "compose_overrides() method not found on local composable")
+
+    # Test that we can call it
+    result = local.compose_overrides({'services': {'test': {}}})
+    assert_true('_target' in result, "compose_overrides() should return dict with _target")
+
+    print("  [PASS] test_compose_overrides_method_exists_on_local")
+
+def test_compose_overrides_method_returns_modification():
+    """Test that compose_overrides() method returns proper modification dict."""
+    # Use local composable to avoid circular dependency
+    mock_dep = cc_local_composable('mock-dep', '/path/to/compose.yaml')
+
+    overrides = {
+        'services': {
+            'db': {
+                'environment': {
+                    'MYSQL_ROOT_PASSWORD': 'test123',
+                },
+            },
+        },
+    }
+
+    result = mock_dep.compose_overrides(overrides)
+
+    # Should have _target
+    assert_true('_target' in result, "compose_overrides() result missing _target field")
+    assert_equals(result['_target'], 'mock-dep', "compose_overrides() _target should match dep name")
+
+    # Should have the overrides
+    assert_true('services' in result, "compose_overrides() result missing services")
+
+    print("  [PASS] test_compose_overrides_method_returns_modification")
 
 # ============================================================================
 # Run All Tests
@@ -928,6 +973,10 @@ def run_tests():
     test_cc_local_composable_modifications_default_empty()
     test_cc_local_composable_multiple_modifications()
     test_struct_to_dict_preserves_modifications()
+
+    print("\n=== compose_overrides Method Tests ===")
+    test_compose_overrides_method_exists_on_local()
+    test_compose_overrides_method_returns_modification()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
