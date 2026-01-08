@@ -772,6 +772,7 @@ def _struct_to_dict(dep_struct):
         'compose_overrides': dep_struct.compose_overrides,
         'profiles': getattr(dep_struct, 'profiles', []),
         'labels': getattr(dep_struct, 'labels', []),
+        'modifications': getattr(dep_struct, 'modifications', []),
         '_from_cli': dep_struct._from_cli,
         '_is_local': getattr(dep_struct, '_is_local', False),
     }
