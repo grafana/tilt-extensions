@@ -284,10 +284,12 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
         profiles=profiles,
         labels=labels,
         modifications=modifications,
-        compose_overrides={},
+        _compose_overrides_param={},
         _symbols={},
         _is_local=True,
         _from_cli=False,
+        # Bind universal compose_overrides() method
+        compose_overrides=_add_target_wrapper(_compose_overrides_method, name),
     )
 
 # ============================================================================
@@ -383,7 +385,7 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
         'ref': ref,
         'repo_path': repo_path,
         'compose_path': compose_path,
-        'compose_overrides': compose_overrides,
+        '_compose_overrides_param': compose_overrides,
         'dependencies': nested_deps,
         'profiles': profiles,
         'labels': labels,
@@ -391,16 +393,19 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
         '_from_cli': False,
         '_is_local': False,
     }
-    
+
     # Bind imported helper functions with target metadata wrapper
     for fn_name in imports:
         if fn_name not in symbols:
             fail("Extension " + name + " does not export '" + fn_name + "'")
-        
+
         # Wrap to add _target metadata to results
         original_fn = symbols[fn_name]
         struct_fields[fn_name] = _add_target_wrapper(original_fn, name)
-    
+
+    # Bind universal compose_overrides() method to all composables
+    struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name)
+
     return struct(**struct_fields)
 
 def _add_target_wrapper(fn, dep_name):
@@ -419,6 +424,33 @@ def _add_target_wrapper(fn, dep_name):
         return result
     
     return wrapped
+
+def _compose_overrides_method(overrides):
+    """
+    Base compose_overrides method that all composables get bound.
+
+    This provides a consistent API for specifying compose overrides that can be
+    used in the modifications list of cc_local_composable().
+
+    Args:
+        overrides: Dict of compose overrides (services, volumes, networks, etc.)
+
+    Returns:
+        Dict with the overrides, which will have _target added by wrapper
+
+    Example:
+        mysql.compose_overrides({
+            'services': {
+                'db': {
+                    'command': '--max_connections=1000',
+                },
+            },
+        })
+    """
+    if type(overrides) != 'dict':
+        fail("compose_overrides() requires a dict, got: " + str(type(overrides)))
+
+    return overrides
 
 def _is_url(s):
     """Check if string is a URL (git or https)."""
@@ -494,12 +526,14 @@ def cc_parse_cli_plugins(tiltfile_dir):
             ref=dep.ref,
             repo_path=dep.repo_path,
             compose_path=dep.compose_path,
-            compose_overrides=dep.compose_overrides,
+            _compose_overrides_param=dep._compose_overrides_param,
             dependencies=dep.dependencies,
             profiles=dep.profiles,
             _symbols=dep._symbols,
             _from_cli=True,
             _is_local=False,
+            # Bind the compose_overrides method for CLI plugins too
+            compose_overrides=dep.compose_overrides,
         )
         
         deps.append(dep)
@@ -768,7 +802,7 @@ def _struct_to_dict(dep_struct):
     """
     result = {
         'name': dep_struct.name,
-        'compose_overrides': dep_struct.compose_overrides,
+        '_compose_overrides_param': dep_struct._compose_overrides_param,
         'profiles': getattr(dep_struct, 'profiles', []),
         'labels': getattr(dep_struct, 'labels', []),
         'modifications': getattr(dep_struct, 'modifications', []),
@@ -824,10 +858,10 @@ def _apply_modifications(dependencies, modifications):
         for key in mod:
             if not key.startswith('_'):
                 mod_overrides[key] = mod[key]
-        
+
         # Deep merge into existing compose_overrides
-        existing = dep.get('compose_overrides', {})
-        dep['compose_overrides'] = _deep_merge(existing, mod_overrides)
+        existing = dep.get('_compose_overrides_param', {})
+        dep['_compose_overrides_param'] = _deep_merge(existing, mod_overrides)
         
         print("  Applied modification to: " + target)
 
@@ -885,10 +919,10 @@ def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles
         else:
             # Merge compose_overrides if we've seen this dep before
             existing = seen_names[dep_dict['name']]
-            if dep_dict.get('compose_overrides'):
-                existing['compose_overrides'] = _deep_merge(
-                    existing.get('compose_overrides', {}),
-                    dep_dict['compose_overrides']
+            if dep_dict.get('_compose_overrides_param'):
+                existing['_compose_overrides_param'] = _deep_merge(
+                    existing.get('_compose_overrides_param', {}),
+                    dep_dict['_compose_overrides_param']
                 )
     
     # Add root itself (local plugin) - root is always included
@@ -1119,7 +1153,7 @@ def cc_generate_master_compose(
 
         # Apply static compose_overrides from dependency definition
         # Note: CRD mounts come through compose_overrides via register_crds() helper
-        overrides = dep.get('compose_overrides')
+        overrides = dep.get('_compose_overrides_param')
         if overrides:
             print("    -> Applying compose_overrides")
             content = _deep_merge(content, overrides)
