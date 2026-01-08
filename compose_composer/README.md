@@ -2,16 +2,72 @@
 
 A Tilt extension for dynamically assembling Docker Compose environments from modular, reusable components.
 
-## Overview
+## The Problem: Docker Compose is Too Rigid
 
-Compose Composer enables you to build development environments from composable pieces. Each component (k3s-apiserver, grafana, mysql, your plugins) can define:
+Imagine you're building a Grafana plugin. Your development environment needs:
+- A Kubernetes API server for testing your operator
+- MySQL for Grafana's database
+- Grafana itself with specific configuration
+- Your plugin's services
 
-- Its own Docker Compose services
-- Dependencies on other components
-- Wiring rules that activate when other components are present
-- A complete dependency tree that travels with the component
+Now imagine you have 10 such plugins, each with slightly different needs. Do you duplicate the entire stack 10 times? What happens when you need to update the k3s configuration - do you update it in 10 places?
 
-**Design Principle**: Any plugin can be the orchestrator. The result is symmetric - whether you run `tilt up` from plugin-A or plugin-B, the final composed environment is consistent because wiring is defined declaratively in each component.
+**Docker Compose doesn't support runtime composition**. You can't say "give me k3s + grafana + mysql, but let my plugin customize how they're wired together." You're forced to choose between:
+
+1. **Monolithic stacks**: One huge docker-compose.yaml with everything. Any plugin change requires touching the central file.
+2. **Copy-paste**: Duplicate infrastructure across projects. Updates become a maintenance nightmare.
+3. **Include directives**: Static includes can't adapt to what's actually needed. You get everything or nothing.
+
+What you really want is **LEGO blocks for dev environments** - reusable infrastructure components that you can assemble differently for each project, with the wiring happening automatically based on what's present.
+
+## The Solution: Runtime Assembly of Composable LEGOs
+
+Compose Composer enables you to build reusable infrastructure components (we call them "composables") that can be assembled dynamically at runtime. Each composable is self-contained and knows how to wire itself to other components when they're present.
+
+**Real-world example**: The [grafana/devenv-compose](https://github.com/grafana/devenv-compose) repository contains production composables used across Grafana development:
+- `k3s-apiserver` - Kubernetes API server with CRD loading and webhook support
+- `grafana` - Grafana with MySQL, smart wiring to k3s when present
+- `mysql`, `postgres`, `redis` - Databases that auto-configure when other services need them
+
+Your plugin simply declares what it needs:
+
+```python
+k3s = cc_composable(name='k3s-apiserver', url='https://github.com/grafana/devenv-compose')
+grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+
+def cc_get_plugin():
+    return cc_local_composable('my-plugin', './docker-compose.yaml', k3s, grafana)
+```
+
+Compose Composer:
+1. **Fetches** the composables from git repos (or local paths)
+2. **Resolves** transitive dependencies (grafana needs mysql, mysql is auto-included)
+3. **Wires** components together (grafana auto-configures when it sees k3s)
+4. **Generates** a master docker-compose.yaml using include directives
+5. **Preserves** relative paths so volume mounts work correctly
+
+**The result**: Your plugin gets exactly what it needs, components know how to work together, and you never duplicate infrastructure code.
+
+## Key Innovation: Symmetric Orchestration
+
+**Any plugin can be the orchestrator**. Whether you run `tilt up` from plugin-A or plugin-B, the result is identical because wiring is declarative:
+
+```python
+# In grafana's composable definition
+def get_wire_when():
+    return {
+        'k3s-apiserver': {  # When k3s is present...
+            'services': {
+                'grafana': {  # ...wire grafana to it
+                    'volumes': ['k3s-certs:/etc/kubernetes/pki:ro'],
+                    'environment': {'KUBECONFIG': '/etc/grafana/kubeconfig.yaml'},
+                }
+            }
+        }
+    }
+```
+
+Grafana defines its own k3s integration. K3s doesn't need to know about Grafana. This symmetry means plugins can bring their own infrastructure without coordinating with a central orchestrator.
 
 ## Quick Start
 
