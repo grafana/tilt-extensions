@@ -297,7 +297,7 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
 # Dependency Struct (Remote Plugin Loading)
 # ============================================================================
 
-def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
+def cc_composable(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
 
@@ -310,7 +310,7 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
 
     Args:
         name: Extension name (required)
-        url: Extension repo URL - file:// or https:// (required)
+        url: Extension repo URL - file:// or https:// (default: 'https://github.com/grafana/composables')
         ref: Git ref for https:// URLs (default: 'main')
         repo_path: Path within repo (default: name)
         compose_overrides: Static overrides dict (optional)
@@ -334,9 +334,9 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
 
     Example:
         # Always included (no profiles), services grouped under 'infra'
+        # Uses default URL (grafana/devenv-compose)
         k3s = cc_composable(
             name='k3s-apiserver',
-            url='file:///path/to/composables',
             imports=['register_crds'],
             labels=['infra'],
         )
@@ -344,8 +344,14 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
         # Only included when 'dev' or 'full' profile is active
         mysql = cc_composable(
             name='mysql',
-            url='file:///path/to/composables',
             profiles=['dev', 'full'],
+            labels=['infra'],
+        )
+
+        # Using a custom composables repository
+        custom = cc_composable(
+            name='my-component',
+            url='file:///path/to/local/composables',
             labels=['infra'],
         )
     """

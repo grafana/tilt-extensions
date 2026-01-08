@@ -24,7 +24,7 @@ What you really want is **LEGO blocks for dev environments** - reusable infrastr
 
 Compose Composer enables you to build reusable infrastructure components (we call them "composables") that can be assembled dynamically at runtime. Each composable is self-contained and knows how to wire itself to other components when they're present.
 
-**Real-world example**: The [grafana/devenv-compose](https://github.com/grafana/devenv-compose) repository contains production composables used across Grafana development:
+**Real-world example**: The [grafana/composables](https://github.com/grafana/composables) repository contains production composables used across Grafana development:
 - `k3s-apiserver` - Kubernetes API server with CRD loading and webhook support
 - `grafana` - Grafana with MySQL, smart wiring to k3s when present
 - `mysql`, `postgres`, `redis` - Databases that auto-configure when other services need them
@@ -32,12 +32,15 @@ Compose Composer enables you to build reusable infrastructure components (we cal
 Your plugin simply declares what it needs:
 
 ```python
-k3s = cc_composable(name='k3s-apiserver', url='https://github.com/grafana/devenv-compose')
-grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+k3s = cc_composable(name='k3s-apiserver')
+grafana = cc_composable(name='grafana')
 
 def cc_get_plugin():
     return cc_local_composable('my-plugin', './docker-compose.yaml', k3s, grafana)
 ```
+
+For another example, take a look at `compose_composer` as applied to the Grafana Assistant's `docker-compose`. The original docker-compose.yaml and the resuling [Tilefile](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/Tilt) and smaller [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/assistant-compose.yaml). Notice how the shorted docker-compose file only deals with the application services.
+
 
 Compose Composer:
 1. **Fetches** the composables from git repos (or local paths)
@@ -67,7 +70,7 @@ def get_wire_when():
     }
 ```
 
-Grafana defines its own k3s integration. K3s doesn't need to know about Grafana. This symmetry means plugins can bring their own infrastructure without coordinating with a central orchestrator.
+The Grafana composable defines its own k3s composable. K3s doesn't need to know about Grafana. This symmetry means plugins can bring their own infrastructure without coordinating with a central orchestrator.
 
 ## Table of Contents
 
@@ -86,7 +89,7 @@ Grafana defines its own k3s integration. K3s doesn't need to know about Grafana.
 
 ## Quick Start
 
-> **Prerequisites**: This guide assumes you have [Tilt](https://tilt.dev) installed and familiarity with Docker Compose. The examples use the [grafana/devenv-compose](https://github.com/grafana/devenv-compose) composables repository.
+> **Prerequisites**: This guide assumes you have [Tilt](https://tilt.dev) installed and familiarity with Docker Compose. The examples use the [grafana/composables](https://github.com/grafana/composables) repository.
 
 ### Basic Orchestrator
 
@@ -102,11 +105,10 @@ load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_gener
 allow_k8s_contexts(k8s_context())
 
 # Define dependencies using cc_composable()
-DEVENV_URL = 'file:///path/to/composables'
-
-k3s = cc_composable(name='k3s-apiserver', url=DEVENV_URL)
-mysql = cc_composable(name='mysql', url=DEVENV_URL)
-grafana = cc_composable(name='grafana', url=DEVENV_URL)
+# url defaults to 'https://github.com/grafana/composables'
+k3s = cc_composable(name='k3s-apiserver')
+mysql = cc_composable(name='mysql')
+grafana = cc_composable(name='grafana')
 
 # Define your plugin with its compose file and dependencies
 def cc_get_plugin():
@@ -896,14 +898,14 @@ This section demonstrates key capabilities with realistic, copy-pasteable exampl
 # my-dashboard-plugin/Tiltfile
 
 # Load compose_composer
-v1alpha1.extension_repo(name='devenv', url='https://github.com/grafana/devenv-compose')
+v1alpha1.extension_repo(name='devenv', url='https://github.com/grafana/composables')
 v1alpha1.extension(name='compose_composer', repo_name='devenv', repo_path='compose_composer')
 load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_docker_compose')
 
 allow_k8s_contexts(k8s_context())
 
 # Declare only what you need directly - Grafana brings MySQL automatically
-grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+grafana = cc_composable(name='grafana', url='https://github.com/grafana/composables')
 
 def cc_get_plugin():
     return cc_local_composable(
@@ -966,12 +968,12 @@ Each CLI plugin brings its own dependencies, which are automatically de-duplicat
 # analytics-service/Tiltfile
 
 # Core infrastructure (always included)
-grafana = cc_composable(name='grafana', url='https://github.com/grafana/devenv-compose')
+grafana = cc_composable(name='grafana', url='https://github.com/grafana/composables')
 
 # Development tools (only in dev/full profiles)
 jaeger = cc_composable(
     name='jaeger',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     profiles=['dev', 'full'],
     labels=['observability'],
 )
@@ -979,14 +981,14 @@ jaeger = cc_composable(
 # SQL test databases (only in sql/full profiles)
 clickhouse = cc_composable(
     name='clickhouse',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     profiles=['sql', 'full'],
     labels=['sql-test'],
 )
 
 postgres = cc_composable(
     name='postgres-test',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     profiles=['sql', 'full'],
     labels=['sql-test'],
 )
@@ -1028,20 +1030,20 @@ tilt up -- --profile=full
 
 k3s = cc_composable(
     name='k3s-apiserver',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     imports=['register_crds'],
     labels=['k8s'],
 )
 
 mysql = cc_composable(
     name='mysql',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     labels=['infra'],
 )
 
 grafana = cc_composable(
     name='grafana',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     labels=['app'],
 )
 
@@ -1193,7 +1195,7 @@ def cc_get_plugin():
 # In your plugin's Tiltfile
 k3s = cc_composable(
     name='k3s-apiserver',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     imports=['register_crds'],  # Bind this helper
 )
 
@@ -1226,13 +1228,13 @@ def cc_get_plugin():
 
 k3s = cc_composable(
     name='k3s-apiserver',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
     imports=['register_crds'],
 )
 
 grafana = cc_composable(
     name='grafana',
-    url='https://github.com/grafana/devenv-compose',
+    url='https://github.com/grafana/composables',
 )
 
 def cc_get_plugin():
