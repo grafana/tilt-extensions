@@ -740,6 +740,63 @@ def test_cc_local_compose_labels_default_empty():
     assert_equals(plugin.labels, [])
     print("  [PASS] test_cc_local_compose_labels_default_empty")
 
+# ============================================================================
+# Modifications Tests
+# ============================================================================
+
+def test_cc_local_compose_with_modifications():
+    """Test creating cc_local_compose with modifications parameter."""
+    # Create a mock modification dict
+    mod = {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['test:/test']}}}
+
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+        modifications=[mod],
+    )
+    assert_equals(plugin.name, 'my-plugin')
+    assert_equals(len(plugin.modifications), 1)
+    assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
+    print("  [PASS] test_cc_local_compose_with_modifications")
+
+def test_cc_local_compose_modifications_default_empty():
+    """Test that modifications default to empty list."""
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+    )
+    assert_equals(plugin.modifications, [])
+    print("  [PASS] test_cc_local_compose_modifications_default_empty")
+
+def test_cc_local_compose_multiple_modifications():
+    """Test plugin with multiple modifications."""
+    mod1 = {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['crds1:/crds1']}}}
+    mod2 = {'_target': 'mysql', 'services': {'db': {'environment': ['TEST=1']}}}
+
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+        modifications=[mod1, mod2],
+    )
+    assert_equals(len(plugin.modifications), 2)
+    assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
+    assert_equals(plugin.modifications[1]['_target'], 'mysql')
+    print("  [PASS] test_cc_local_compose_multiple_modifications")
+
+def test_struct_to_dict_preserves_modifications():
+    """Test that struct_to_dict preserves modifications field."""
+    mod = {'_target': 'k3s-apiserver', 'services': {'test': {}}}
+    plugin = cc_local_compose(
+        'my-plugin',
+        '/path/to/compose.yaml',
+        modifications=[mod],
+    )
+
+    plugin_dict = struct_to_dict(plugin)
+    assert_equals(len(plugin_dict['modifications']), 1)
+    assert_equals(plugin_dict['modifications'][0]['_target'], 'k3s-apiserver')
+    print("  [PASS] test_struct_to_dict_preserves_modifications")
+
 def test_flatten_dependency_tree_with_profiles():
     """Test that dependency tree respects profiles."""
     always_included = struct(
@@ -865,7 +922,13 @@ def run_tests():
     print("\n=== Label Tests ===")
     test_cc_local_compose_with_labels()
     test_cc_local_compose_labels_default_empty()
-    
+
+    print("\n=== Modifications Tests ===")
+    test_cc_local_compose_with_modifications()
+    test_cc_local_compose_modifications_default_empty()
+    test_cc_local_compose_multiple_modifications()
+    test_struct_to_dict_preserves_modifications()
+
     print("\n" + "=" * 50)
     print("All tests passed!")
     print("=" * 50)
