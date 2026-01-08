@@ -407,7 +407,7 @@ def cc_dependency(name, url, ref=None, repo_path=None, compose_overrides={}, imp
 def _add_target_wrapper(fn, dep_name):
     """
     Wrap a helper function to add _target metadata to the result.
-    
+
     This tells compose_composer which dependency the modification applies to.
     """
     def wrapped(*args, **kwargs):
@@ -986,11 +986,34 @@ def cc_generate_master_compose(
         if dep.get('profiles'):
             profile_marker = " [" + ", ".join(dep['profiles']) + "]"
         print("    - " + dep['name'] + local_marker + cli_marker + profile_marker)
-    
+
+    # Collect plugin-declared modifications
+    plugin_modifications = []
+
+    # Collect from root plugin
+    root_dict = _struct_to_dict(root_plugin) if type(root_plugin) == 'struct' else root_plugin
+    if root_dict.get('modifications'):
+        plugin_modifications.extend(root_dict['modifications'])
+        print("\n  Collected " + str(len(root_dict['modifications'])) + " modification(s) from " + root_dict['name'])
+
+    # Collect from CLI plugins
+    for cli_plugin in cli_plugins:
+        cli_dict = _struct_to_dict(cli_plugin) if type(cli_plugin) == 'struct' else cli_plugin
+        if cli_dict.get('modifications'):
+            plugin_modifications.extend(cli_dict['modifications'])
+            print("  Collected " + str(len(cli_dict['modifications'])) + " modification(s) from " + cli_dict['name'])
+
+    # Merge: plugin modifications first (requirements), then orchestrator modifications (overrides)
+    all_modifications = plugin_modifications + modifications
+
     # Apply modifications from helper functions
-    if modifications:
+    if all_modifications:
         print("\nApplying modifications:")
-        _apply_modifications(dependencies, modifications)
+        if plugin_modifications:
+            print("  Plugin-declared: " + str(len(plugin_modifications)))
+        if modifications:
+            print("  Orchestrator-provided: " + str(len(modifications)))
+        _apply_modifications(dependencies, all_modifications)
     
     # ========================================================================
     # Collect loaded deps and their symbols
