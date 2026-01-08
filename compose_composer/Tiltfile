@@ -934,16 +934,22 @@ def cc_generate_master_compose(
     - Wiring rules are defined declaratively in extensions (get_wire_when)
     - Dependencies declare their own dependencies via get_plugin()
     - compose_overrides are deep-merged when dependencies overlap
+    - Modifications can be declared in plugin definitions (cc_local_compose)
 
     Args:
-        root_plugin: The root plugin struct from local_compose() or get_plugin().
-                     Contains compose_path and dependencies.
-        cli_plugins: List of additional plugin structs from parse_cli_plugins()
+        root_plugin: The root plugin struct from cc_local_compose() or cc_get_plugin().
+                     Contains compose_path, dependencies, and optional modifications.
+        cli_plugins: List of additional plugin structs from cc_parse_cli_plugins().
+                     Each may contain its own modifications.
         staging_dir: Directory for modified compose files.
                      Defaults to .compose-stage/ in current working directory.
-        modifications: List of modification dicts returned by helper functions
-                       (e.g., k3s.register_crds()). Each has '_target' indicating
-                       which dependency to modify.
+        modifications: List of orchestrator-level modification dicts returned by
+                       helper functions (e.g., k3s.register_crds()). Each has
+                       '_target' indicating which dependency to modify.
+
+                       This parameter is for ORCHESTRATOR-SPECIFIC modifications
+                       only. Plugin requirements should be declared in cc_local_compose's
+                       modifications parameter for symmetric orchestration.
 
     Returns:
         Dict with:
@@ -951,21 +957,66 @@ def cc_generate_master_compose(
         - '_service_to_labels': Dict mapping service names to label lists for dc_resource()
                                 (extracted by cc_docker_compose() for auto-registration)
 
-    Example:
-        k3s = dependency(name='k3s-apiserver', url='...', imports=['register_crds'])
-        mysql = dependency(name='mysql', url='...')
+    Modification Handling (Two-Level System):
 
-        def get_plugin():
-            return local_compose('my-plugin', os.path.dirname(__file__) + '/docker-compose.yaml', k3s, mysql)
+        This function collects modifications from two sources and applies them in order:
 
-        crd_mod = k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/crds'])
-        cli = parse_cli_plugins(os.path.dirname(__file__))
+        1. Plugin-declared modifications (from cc_local_compose):
+           - Collected from root_plugin.modifications
+           - Collected from each cli_plugin.modifications
+           - Applied first (define requirements)
+           - Enable symmetric orchestration - plugin works as orchestrator OR CLI plugin
 
-        master = generate_master_compose(
-            get_plugin(),
-            cli,
-            modifications=[crd_mod],
-        )
+        2. Orchestrator-provided modifications (from modifications arg):
+           - Passed explicitly by orchestrator
+           - Applied second (can override)
+           - For environment-specific customization only
+
+        Order: plugin_modifications + orchestrator_modifications
+
+        This two-level system allows plugins to declare their base requirements
+        once (in cc_get_plugin), while orchestrators can add environment-specific
+        overrides when needed.
+
+    Example (Plugin-declared modifications - RECOMMENDED):
+        k3s = cc_dependency(name='k3s-apiserver', url='...', imports=['register_crds'])
+        mysql = cc_dependency(name='mysql', url='...')
+
+        def cc_get_plugin():
+            return cc_local_compose(
+                'service-model',
+                os.path.dirname(__file__) + '/docker-compose.yaml',
+                k3s, mysql,
+                labels=['app'],
+                modifications=[
+                    # Declare requirements here - works in ALL modes
+                    k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
+                ],
+            )
+
+        if __file__ == config.main_path:
+            cli_plugins = cc_parse_cli_plugins(os.path.dirname(__file__))
+
+            master = cc_generate_master_compose(
+                cc_get_plugin(),  # Has plugin-level modifications
+                cli_plugins,       # May have their own modifications
+                modifications=[],  # Orchestrator-specific (usually empty)
+            )
+
+    Example (Orchestrator-level modifications - for overrides only):
+        if __file__ == config.main_path:
+            plugin = cc_get_plugin()
+
+            # Environment-specific debug modifications
+            debug_mods = [
+                k3s.configure_something(debug=True),
+            ]
+
+            master = cc_generate_master_compose(
+                plugin,
+                cli_plugins,
+                modifications=debug_mods,  # Applied after plugin mods
+            )
     """
     staging_dir = staging_dir if staging_dir else os.path.abspath('.compose-stage')
     

@@ -194,7 +194,7 @@ The `cc_` prefix ensures there are no naming collisions with your own functions.
 
 ### Bound Helpers
 
-When you import a helper function, it's bound to the dependency struct:
+When you import a helper function via `imports=[]`, it's bound to the dependency struct:
 
 ```python
 k3s = cc_dependency(
@@ -208,16 +208,105 @@ crd_mod = k3s.register_crds(crd_paths=[
     os.path.dirname(__file__) + '/crds',
     os.path.dirname(__file__) + '/definitions',
 ])
-
-# Pass modifications to cc_generate_master_compose
-master_compose = cc_generate_master_compose(
-    cc_get_plugin(),
-    cli_plugins,
-    modifications=[crd_mod],
-)
 ```
 
 The wrapper automatically adds `_target` metadata so compose_composer knows which dependency to modify.
+
+**Old approach (orchestrator-level):**
+```python
+# In orchestrator block only - doesn't work for CLI plugins
+if __file__ == config.main_path:
+    crd_mod = k3s.register_crds(crd_paths=[...])
+
+    master = cc_generate_master_compose(
+        cc_get_plugin(),
+        cli_plugins,
+        modifications=[crd_mod],  # Only applied when this is orchestrator
+    )
+```
+
+**New approach (plugin-level - RECOMMENDED):**
+```python
+# In cc_get_plugin() - works as orchestrator OR CLI plugin
+def cc_get_plugin():
+    return cc_local_compose(
+        'my-plugin',
+        compose_path,
+        k3s, mysql,
+        modifications=[
+            k3s.register_crds(crd_paths=[...]),  # Applied in ALL modes
+        ],
+    )
+```
+
+See [Plugin-Declared Modifications](#plugin-declared-modifications-recommended) section below for details.
+
+### Plugin-Declared Modifications (Recommended)
+
+**NEW:** Instead of calling helper functions in the orchestrator block, declare modifications directly in `cc_get_plugin()`. This enables **symmetric orchestration** - your plugin works the same whether it's the orchestrator or a CLI plugin.
+
+**Example - Plugin-declared modifications:**
+
+```python
+# service-model/Tiltfile
+
+# Load dependencies
+k3s = cc_dependency(
+    name='k3s-apiserver',
+    url=DEVENV_URL,
+    imports=['register_crds'],
+    labels=['k8s'],
+)
+
+mysql = cc_dependency(name='mysql', url=DEVENV_URL, labels=['infra'])
+grafana = cc_dependency(name='grafana', url=DEVENV_URL, labels=['app'])
+
+# Declare modifications IN the plugin definition
+def cc_get_plugin():
+    return cc_local_compose(
+        'service-model',
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+        k3s, mysql, grafana,
+        labels=['app'],
+        modifications=[
+            # Declare requirements here - works in ALL modes!
+            k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
+        ],
+    )
+
+# Orchestrator block is clean
+if __file__ == config.main_path:
+    cli_plugins = cc_parse_cli_plugins(os.path.dirname(__file__))
+
+    master = cc_generate_master_compose(
+        cc_get_plugin(),  # Plugin modifications already included
+        cli_plugins,
+        modifications=[],  # Usually empty - plugins declare their own
+    )
+
+    cc_docker_compose(master)
+```
+
+**Why this is better:**
+
+1. **Works as orchestrator**: When you run `tilt up` in service-model/, CRDs are loaded
+2. **Works as CLI plugin**: When you run `tilt up -- service-model` from another orchestrator, CRDs are still loaded
+3. **Single declaration**: Requirements defined once, work everywhere
+4. **Self-documenting**: Plugin struct shows all its requirements
+
+**Two-Level Modification System:**
+
+compose_composer collects modifications from two sources:
+
+1. **Plugin-declared** (from `cc_local_compose.modifications`):
+   - Collected from root_plugin and all cli_plugins
+   - Applied first (define requirements)
+   - Enable symmetric orchestration
+
+2. **Orchestrator-provided** (from `cc_generate_master_compose.modifications` parameter):
+   - Passed explicitly by orchestrator
+   - Applied second (can override)
+   - For environment-specific customization only
 
 ### Wire When Rules
 
@@ -247,7 +336,7 @@ This is symmetric - grafana defines how it wires to k3s-apiserver, not the other
 
 ### Functions
 
-#### `cc_local_compose(name, compose_path, *dependencies, profiles=[], labels=[])`
+#### `cc_local_compose(name, compose_path, *dependencies, profiles=[], labels=[], modifications=[])`
 
 Creates a local plugin struct.
 
@@ -257,6 +346,10 @@ Creates a local plugin struct.
 - `*dependencies`: Varargs of dependency structs this plugin depends on
 - `profiles`: List of profile names this plugin belongs to (optional)
 - `labels`: List of Tilt labels for grouping services in the UI (optional, default: `['dependencies']`)
+- `modifications`: List of modification dicts from helper function calls (optional, default: `[]`)
+  - Declare helper-based modifications here for symmetric orchestration
+  - Works as orchestrator OR CLI plugin
+  - Applied in ALL modes
 
 **Returns:** struct with plugin metadata
 
