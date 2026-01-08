@@ -237,6 +237,7 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
           - modifications: List of modification dicts
+          - compose_overrides(): Bound method for specifying overrides (returns modification dict)
           - _is_local: True (marker for local plugins)
 
     Example:
@@ -327,6 +328,7 @@ def cc_composable(name, url, ref=None, repo_path=None, compose_overrides={}, imp
           - dependencies: From extension's cc_get_plugin() if available
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
+          - compose_overrides(): Bound method for specifying overrides (returns modification dict)
           - _symbols: dict of loaded symbols
           - Bound helper functions from imports list
 
@@ -503,7 +505,7 @@ def cc_parse_cli_plugins(tiltfile_dir):
                       Typically: os.path.dirname(__file__)
     
     Returns:
-        List of dependency structs (same type as returned by dependency())
+        List of dependency structs (same type as returned by cc_composable())
     """
     plugins = _cfg.get('args', [])
     deps = []
