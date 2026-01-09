@@ -24,7 +24,9 @@ What you really want is **LEGO blocks for dev environments** - reusable infrastr
 
 Compose Composer enables you to build reusable infrastructure components (we call them "composables") that can be assembled dynamically at runtime. Each composable is self-contained and knows how to wire itself to other components when they're present.
 
-**Real-world example**: The [grafana/composables](https://github.com/grafana/composables) repository contains production composables used across Grafana development:
+### **Real-world example**:
+
+The [grafana/composables](https://github.com/grafana/composables) repository contains production composables used across Grafana development:
 - `k3s-apiserver` - Kubernetes API server with CRD loading and webhook support
 - `grafana` - Grafana with MySQL, smart wiring to k3s when present
 - `mysql`, `postgres`, `redis` - Databases that auto-configure when other services need them
@@ -39,8 +41,9 @@ def cc_get_plugin():
     return cc_local_composable('my-plugin', './docker-compose.yaml', k3s, grafana)
 ```
 
-For another example, take a look at `compose_composer` as applied to the Grafana Assistant's `docker-compose`. The original docker-compose.yaml and the resuling [Tilefile](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/Tilt) and smaller [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/assistant-compose.yaml). Notice how the shorted docker-compose file only deals with the application services.
+Where `./docker-compose.yaml` is the local app's compose file. 
 
+**The result**: Your plugin gets exactly what it needs, components know how to work together, and you never duplicate infrastructure code.
 
 Compose Composer:
 1. **Fetches** the composables from git repos (or local paths)
@@ -49,34 +52,32 @@ Compose Composer:
 4. **Generates** a master docker-compose.yaml using include directives
 5. **Preserves** relative paths so volume mounts work correctly
 
-**The result**: Your plugin gets exactly what it needs, components know how to work together, and you never duplicate infrastructure code.
+#### Grafana Assistant App
+For another example, take a look at `compose_composer` as applied to the Grafana Assistant's `docker-compose`. The original [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/docker-compose.yaml)
 
-## Key Innovation: Symmetric Orchestration
+After compose-compose, the resulting [Tiltfile](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/Tilt) and smaller [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/assistant-compose.yaml). Notice how the shorted docker-compose file only deals with the application services. Tilt and compose-composer take care of the rest.
 
-**Any plugin can be the orchestrator**. Whether you run `tilt up` from plugin-A or plugin-B, the result is identical because wiring is declarative:
+#### Service Model - A Simple AppPlatform App
 
-```python
-# In grafana's composable definition
-def get_wire_when():
-    return {
-        'k3s-apiserver': {  # When k3s is present...
-            'services': {
-                'grafana': {  # ...wire grafana to it
-                    'volumes': ['k3s-certs:/etc/kubernetes/pki:ro'],
-                    'environment': {'KUBECONFIG': '/etc/grafana/kubeconfig.yaml'},
-                }
-            }
-        }
-    }
+ServiceModel is simple cloud AppPlatform app with a few CRDs and a controller. This [Tiltfile](https://github.com/grafana/service-model/blob/docker-compose/Tiltfile) has been ported to use compose-composer. Note the use of the `register_crds()` helper method. You can run it along side `grafana-assistant-app` like this when you have both checked out (from `grafana-assistant-app`):
+
+```sh
+% tilt up  -- --profile=core ../service-model
 ```
 
-The Grafana composable defines its own k3s composable. K3s doesn't need to know about Grafana. This symmetry means plugins can bring their own infrastructure without coordinating with a central orchestrator.
+## Key Innovations:
+
+### 1. Symmetric Orchestration
+
+**Any plugin can be the orchestrator**. Whether you run `tilt up` from plugin-A or plugin-B, the result is identical because wiring is declarative. As each composable exports a `cc_get_plugin()` that encapsulates it's docker compose and all of it's dependencies.
+
+### 2. Composable Lego-like assembly of infrastructure and application modules.
 
 ## Table of Contents
 
 - [The Problem: Docker Compose is Too Rigid](#the-problem-docker-compose-is-too-rigid)
 - [The Solution: Runtime Assembly of Composable LEGOs](#the-solution-runtime-assembly-of-composable-legos)
-- [Key Innovation: Symmetric Orchestration](#key-innovation-symmetric-orchestration)
+- [Key Innovations](#key-innovation-symmetric-orchestration)
 - [Quick Start](#quick-start)
 - [Usage Examples](#usage-examples)
 - [Core Concepts](#core-concepts)
@@ -131,7 +132,9 @@ if __file__ == config.main_path:
     cc_docker_compose(master_compose)   # Auto-registers services with labels
 ```
 
-### Adding CLI Plugins
+### Starting Multiple Plugins from the tilt command line
+
+If the services that you want to run together vary, then you can specify, on the `tilt` command line` other composables you want to run. Assuming of course they are build with `compose-composer`. When doing multi-plugin development you may want to:
 
 ```bash
 # Run with additional plugins from CLI
@@ -140,10 +143,10 @@ tilt up -- plugin-two ../relative/path /absolute/path
 
 ### Using Profiles
 
-Profiles let you conditionally include dependencies, similar to Docker Compose profiles.
+Profiles let you conditionally include dependencies, compatible with Docker Compose profiles.
 
 ```bash
-# Activate profiles via CLI flags
+# Activate profiles via CLI flags and addational composables
 tilt up -- --profile=dev --profile=debug plugin-two
 
 # Or via environment variable
@@ -170,7 +173,7 @@ mysql = cc_composable(
 )
 
 # Always loaded (no profile restrictions)
-grafana = cc_composable(name='grafana', url=DEVENV_URL)
+grafana = cc_composable(name='grafana')
 ```
 
 **Using profiles in compose files:**
@@ -188,7 +191,7 @@ services:
 
 **Automatic COMPOSE_PROFILES and service registration:**
 
-Use `cc_docker_compose()` instead of `docker_compose()` to automatically:
+Use `cc_docker_compose()` instead of tilts's `docker_compose()` to automatically:
 1. Set COMPOSE_PROFILES environment variable based on active profiles
 2. Register all services with `dc_resource()` using their labels
 
@@ -213,8 +216,8 @@ if __file__ == config.main_path:
 
 Everything in compose_composer is a **plugin struct**. There are two ways to create one:
 
-1. **Remote dependencies** via `cc_composable()` - Loads an extension from a repo
-2. **Local plugins** via `cc_local_composable()` - Defines a local plugin with its compose file
+1. **Remote dependencies** via `cc_composable()` - Loads an extension from a repo, either in git or from the local filesystem.
+2. **Local plugins** via `cc_local_composable()` - Defines a local plugin with its docker-compose.yaml file
 
 Both return structs that can be passed to `cc_generate_master_compose()`.
 
@@ -225,9 +228,9 @@ Creates a plugin struct for your local compose file:
 ```python
 def cc_get_plugin():
     return cc_local_composable(
-        'my-plugin',                                    # Plugin name
+        'my-plugin',                                         # Plugin name
         os.path.dirname(__file__) + '/docker-compose.yaml',  # Compose file path
-        k3s, mysql, grafana,                            # Dependencies (varargs)
+        k3s, mysql, grafana,                                 # Dependencies (varargs)
     )
 ```
 
@@ -250,7 +253,7 @@ When loaded, it calls `cc_get_plugin()` from the extension to get its compose_pa
 
 ### The `cc_get_plugin()` Export
 
-Every extension should export a `cc_get_plugin()` function:
+Every extension should export a `cc_get_plugin()` function in order to be a composable to someone else:
 
 ```python
 # grafana/Tiltfile
@@ -263,11 +266,9 @@ def cc_get_plugin():
     )
 ```
 
-This replaces the older `get_compose_path()` and `get_dependency_graph()` exports with a single, unified interface.
-
-The `cc_` prefix ensures there are no naming collisions with your own functions.
-
 ### Bound Helpers
+
+Composables can export helper functions that provide some syntax sugar for adding to the master docker compose file. Helpers should return slices of a docker compose file to be merged in.
 
 When you import a helper function via `imports=[]`, it's bound to the dependency struct:
 
@@ -287,20 +288,6 @@ crd_mod = k3s.register_crds(crd_paths=[
 
 The wrapper automatically adds `_target` metadata so compose_composer knows which dependency to modify.
 
-**Old approach (orchestrator-level):**
-```python
-# In orchestrator block only - doesn't work for CLI plugins
-if __file__ == config.main_path:
-    crd_mod = k3s.register_crds(crd_paths=[...])
-
-    master = cc_generate_master_compose(
-        cc_get_plugin(),
-        cli_plugins,
-        modifications=[crd_mod],  # Only applied when this is orchestrator
-    )
-```
-
-**New approach (plugin-level - RECOMMENDED):**
 ```python
 # In cc_get_plugin() - works as orchestrator OR CLI plugin
 def cc_get_plugin():
@@ -318,7 +305,7 @@ See [Plugin-Declared Modifications](#plugin-declared-modifications-recommended) 
 
 ### Plugin-Declared Modifications (Recommended)
 
-**NEW:** Instead of calling helper functions in the orchestrator block, declare modifications directly in `cc_get_plugin()`. This enables **symmetric orchestration** - your plugin works the same whether it's the orchestrator or a CLI plugin.
+You may declare modifications to dependent composables directly in `cc_get_plugin()`. This enables **symmetric orchestration** - your plugin works the same whether it's the orchestrator or a CLI plugin.
 
 **Example - Plugin-declared modifications:**
 
@@ -326,15 +313,9 @@ See [Plugin-Declared Modifications](#plugin-declared-modifications-recommended) 
 # service-model/Tiltfile
 
 # Load dependencies
-k3s = cc_composable(
-    name='k3s-apiserver',
-    url=DEVENV_URL,
-    imports=['register_crds'],
-    labels=['k8s'],
-)
-
-mysql = cc_composable(name='mysql', url=DEVENV_URL, labels=['infra'])
-grafana = cc_composable(name='grafana', url=DEVENV_URL, labels=['app'])
+k3s = cc_composable(name='k3s-apiserver', imports=['register_crds'],labels=['k8s'])
+mysql = cc_composable(name='mysql', labels=['infra'])
+grafana = cc_composable(name='grafana', labels=['app'])
 
 # Declare modifications IN the plugin definition
 def cc_get_plugin():
@@ -344,10 +325,14 @@ def cc_get_plugin():
         k3s, mysql, grafana,
         labels=['app'],
         modifications=[
-            # Declare requirements here - works in ALL modes!
+            # Declare requirements here
             k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
         ],
     )
+
+
+If for some reason you need to declare your modifications only when your composable +is* the orchestrator, you can pass in 
+modifications to `cc_generate_master_compos`: 
 
 # Orchestrator block is clean
 if __file__ == config.main_path:
@@ -356,18 +341,13 @@ if __file__ == config.main_path:
     master = cc_generate_master_compose(
         cc_get_plugin(),  # Plugin modifications already included
         cli_plugins,
-        modifications=[],  # Usually empty - plugins declare their own
+        modifications=[
+            k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions'])
+        ],
     )
 
     cc_docker_compose(master)
 ```
-
-**Why this is better:**
-
-1. **Works as orchestrator**: When you run `tilt up` in service-model/, CRDs are loaded
-2. **Works as CLI plugin**: When you run `tilt up -- service-model` from another orchestrator, CRDs are still loaded
-3. **Single declaration**: Requirements defined once, work everywhere
-4. **Self-documenting**: Plugin struct shows all its requirements
 
 **Two-Level Modification System:**
 
@@ -385,7 +365,7 @@ compose_composer collects modifications from two sources:
 
 ### Wire When Rules
 
-Extensions can declare conditional wiring that activates when other dependencies are present:
+Composables can declare conditional wiring that activates when other dependencies are present in the docker-compose collective:
 
 ```python
 # grafana/Tiltfile
@@ -405,7 +385,7 @@ def get_wire_when():
     }
 ```
 
-This is symmetric - grafana defines how it wires to k3s-apiserver, not the other way around.
+This is asymmetric - grafana defines how it wires to k3s-apiserver, not the other way around.
 
 ## API Reference
 
