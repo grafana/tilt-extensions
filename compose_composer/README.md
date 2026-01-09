@@ -98,8 +98,8 @@ ServiceModel is simple cloud AppPlatform app with a few CRDs and a controller. T
 # my-plugin/Tiltfile
 
 # Load compose_composer
-v1alpha1.extension_repo(name='tilt-extensions', url='file:///path/to/tilt-extensions')
-v1alpha1.extension(name='compose_composer', repo_name='tilt-extensions', repo_path='compose_composer')
+v1alpha1.extension_repo(name='grafana-tilt-extensions', url='https://github.com/grafana/tilt-extensions', ref='compose-composer')
+v1alpha1.extension(name='compose_composer', repo_name='grafana-tilt-extensions', repo_path='compose_composer')
 load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
 
 # Allow any k8s context (we're only using docker-compose)
@@ -241,7 +241,7 @@ Loads a remote extension and returns a plugin struct:
 ```python
 k3s = cc_composable(
     name='k3s-apiserver',           # Extension name (required)
-    url='file:///path/to/repo',     # Extension repo URL (required)
+    url='https://github.com/grafana/composables',  # Extension repo URL (required)
     ref='main',                      # Git ref for https:// URLs (optional)
     repo_path='k3s-apiserver',       # Path within repo (default: name)
     compose_overrides={...},         # Static overrides (optional)
@@ -833,7 +833,7 @@ k3s-apiserver provides a `register_crds()` helper to mount CRD files:
 # Import the helper via cc_composable()
 k3s = cc_composable(
     name='k3s-apiserver',
-    url='file:///path/to/composables',
+    url='https://github.com/grafana/composables',
     imports=['register_crds'],
 )
 
@@ -1281,24 +1281,24 @@ tilt up -- ../service-model
 allow_k8s_contexts(k8s_context())
 
 # Load compose_composer
-v1alpha1.extension_repo(name='tilt-ext', url='file:///shared/tilt-extensions')
-v1alpha1.extension(name='compose_composer', repo_name='tilt-ext', repo_path='compose_composer')
+v1alpha1.extension_repo(name='grafana-tilt-extensions', url='https://github.com/grafana/tilt-extensions', ref='compose-composer')
+v1alpha1.extension(name='compose_composer', repo_name='grafana-tilt-extensions', repo_path='compose_composer')
 load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins')
 
 # ============================================================================
 # Core Dependencies
 # ============================================================================
 
-DEVENV_URL = 'file:///shared/composables'
+COMPOSABLES_URL = 'https://github.com/grafana/composables'
 
 k3s = cc_composable(
     name='k3s-apiserver',
-    url=DEVENV_URL,
+    url=COMPOSABLES_URL,
     imports=['register_crds'],
 )
 
-mysql = cc_composable(name='mysql', url=DEVENV_URL)
-grafana = cc_composable(name='grafana', url=DEVENV_URL)
+mysql = cc_composable(name='mysql', url=COMPOSABLES_URL)
+grafana = cc_composable(name='grafana', url=COMPOSABLES_URL)
 
 # ============================================================================
 # Plugin Definition
