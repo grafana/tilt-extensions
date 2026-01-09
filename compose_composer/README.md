@@ -55,7 +55,7 @@ Compose Composer:
 #### Grafana Assistant App
 For another example, take a look at `compose_composer` as applied to the Grafana Assistant's `docker-compose`. The original [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/docker-compose.yaml)
 
-After compose-compose, the resulting [Tiltfile](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/Tilt) and smaller [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/assistant-compose.yaml). Notice how the shorted docker-compose file only deals with the application services. Tilt and compose-composer take care of the rest.
+After compose-compose, the resulting [Tiltfile](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/Tiltfile) and smaller [docker-compose.yaml](https://github.com/grafana/grafana-assistant-app/blob/compose-compose/assistant-compose.yaml). Notice how the shorted docker-compose file only deals with the application services. Tilt and compose-composer take care of the rest.
 
 #### Service Model - A Simple AppPlatform App
 
@@ -134,7 +134,7 @@ if __file__ == config.main_path:
 
 ### Starting Multiple Plugins from the tilt command line
 
-If the services that you want to run together vary, then you can specify, on the `tilt` command line` other composables you want to run. Assuming of course they are build with `compose-composer`. When doing multi-plugin development you may want to:
+If the services that you want to run together vary, then you can specify, on the `tilt` command line other composables you want to run. Assuming of course they are build with `compose-composer`. When doing multi-plugin development you may want to:
 
 ```bash
 # Run with additional plugins from CLI
@@ -329,11 +329,12 @@ def cc_get_plugin():
             k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/definitions']),
         ],
     )
-
+```
 
 If for some reason you need to declare your modifications only when your composable +is* the orchestrator, you can pass in 
 modifications to `cc_generate_master_compos`: 
 
+```python
 # Orchestrator block is clean
 if __file__ == config.main_path:
     cli_plugins = cc_parse_cli_plugins(os.path.dirname(__file__))
