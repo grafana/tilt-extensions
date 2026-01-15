@@ -362,12 +362,23 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     # Register extension repo + extension
     # Use 'cc-' prefix for repo name to avoid conflicts with user's own registrations
     repo_name = 'cc-' + name
-    
+
+    # Note: As of Tilt v0.36.0+, v1alpha1.extension_repo() is idempotent
+    # when called with identical (name, url) parameters.
+    #
+    # CRITICAL: The url must be string-identical, not just resolve to the same path.
+    # Tilt keys on the exact string match. This means:
+    #   - All plugins sharing a dependency MUST use the same URL string
+    #   - Recommended: Use environment variable (COMPOSABLES_URL) for consistency
+    #   - Example: url=os.getenv('COMPOSABLES_URL', 'file:///default/path')
+    #
+    # For older Tilt versions, users may encounter "already registered" errors.
+    # Solution: upgrade to Tilt v0.36.0+ and ensure consistent URL strings.
     if url.startswith('file://'):
         v1alpha1.extension_repo(name=repo_name, url=url)
     else:
         v1alpha1.extension_repo(name=repo_name, url=url, ref=ref if ref else 'main')
-    
+
     v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
     symbols = load_dynamic('ext://' + name)
     
