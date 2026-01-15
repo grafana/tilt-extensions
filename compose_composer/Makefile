@@ -1,4 +1,4 @@
 .PHONY: test
 test:
-	@(cd test; tilt ci)
+	@(cd test; TILT_PORT=13099 tilt ci)
 
