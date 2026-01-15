@@ -380,11 +380,13 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
         plugin_info = get_plugin_fn()
         compose_path = plugin_info.compose_path
         nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
+        modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
     else:
         # Fallback to legacy get_compose_path() for backward compatibility
         get_compose_path_fn = symbols.get('get_compose_path')
         if get_compose_path_fn:
             compose_path = get_compose_path_fn()
+        modifications = []
     
     # Build struct fields
     struct_fields = {
@@ -400,6 +402,7 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
         '_symbols': symbols,
         '_from_cli': False,
         '_is_local': False,
+        'modifications': modifications,
     }
 
     # Bind imported helper functions with target metadata wrapper
@@ -537,6 +540,8 @@ def cc_parse_cli_plugins(tiltfile_dir):
             _compose_overrides_param=dep._compose_overrides_param,
             dependencies=dep.dependencies,
             profiles=dep.profiles,
+            labels=dep.labels,
+            modifications=dep.modifications,
             _symbols=dep._symbols,
             _from_cli=True,
             _is_local=False,
@@ -570,13 +575,44 @@ def _get_compose_path_from_dep(dep):
 # Deep Merge Utility
 # ============================================================================
 
+# Known environment variables that should concatenate instead of replace
+_CONCAT_ENV_VARS = [
+    'WEBHOOK_OPERATORS',  # Multiple webhook operators (op1:ns1,op2:ns2)
+    'API_GROUPS',          # For future use with API aggregation
+]
+
+def _should_concatenate_string(key, base_val, override_val):
+    """
+    Check if this string should be concatenated rather than replaced.
+
+    Used for environment variables like WEBHOOK_OPERATORS where multiple
+    plugins may each contribute values that should be accumulated.
+
+    Returns True if values should be concatenated with comma separator.
+    """
+    # Only for string values (Starlark type() returns "string", not str)
+    if type(base_val) != 'string' or type(override_val) != 'string':
+        return False
+
+    # Check if key is in known concat list
+    if key in _CONCAT_ENV_VARS:
+        return True
+
+    # Heuristic: both contain colon-separated values (like "name:namespace")
+    # This catches similar patterns even if not explicitly listed
+    if ':' in base_val and ':' in override_val:
+        return True
+
+    return False
+
 def _deep_merge(base, override):
     """
     Deep merge override into base.
     - Dicts are merged recursively
     - Lists are concatenated (for volumes, depends_on, etc.)
+    - Comma-separated strings are concatenated (for WEBHOOK_OPERATORS, etc.)
     - Other values are replaced
-    
+
     Returns a new dict (does not modify base).
     """
     if type(base) != 'dict' or type(override) != 'dict':
@@ -591,15 +627,32 @@ def _deep_merge(base, override):
     # Merge/override with keys from override
     for key in override:
         if key in result:
-            if type(result[key]) == 'dict' and type(override[key]) == 'dict':
+            base_type = type(result[key])
+            override_type = type(override[key])
+
+            if base_type == 'dict' and override_type == 'dict':
                 result[key] = _deep_merge(result[key], override[key])
-            elif type(result[key]) == 'list' and type(override[key]) == 'list':
+            elif base_type == 'list' and override_type == 'list':
                 # Concatenate lists, avoiding duplicates for simple values
                 merged = list(result[key])
                 for item in override[key]:
                     if item not in merged:
                         merged.append(item)
                 result[key] = merged
+            elif _should_concatenate_string(key, result[key], override[key]):
+                # Concatenate comma-separated strings (e.g., WEBHOOK_OPERATORS)
+                base_val = result[key]
+                override_val = override[key]
+                base_items = base_val.split(',') if base_val else []
+                override_items = override_val.split(',') if override_val else []
+
+                # Combine and deduplicate
+                combined = list(base_items)
+                for item in override_items:
+                    if item and item not in combined:
+                        combined.append(item)
+
+                result[key] = ','.join(combined)
             else:
                 result[key] = override[key]
         else:
