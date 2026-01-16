@@ -90,3 +90,6 @@ def run_tests():
 
 # Running the tests
 run_tests()
+
+# Dummy resource to satisfy tilt ci (which expects at least one resource)
+local_resource('tests', cmd='echo "Tests completed"', auto_init=False)
