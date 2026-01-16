@@ -1260,7 +1260,7 @@ def cc_generate_master_compose(
         cli_plugins: List of additional plugin structs from cc_parse_cli_plugins().
                      Each may contain its own modifications.
         staging_dir: Directory for modified compose files.
-                     Defaults to .compose-stage/ in current working directory.
+                     Defaults to .cc/ in current working directory.
         modifications: List of orchestrator-level modification dicts returned by
                        helper functions (e.g., k3s.register_crds()). Each has
                        '_target' indicating which dependency to modify.
@@ -1336,7 +1336,7 @@ def cc_generate_master_compose(
                 modifications=debug_mods,  # Applied after plugin mods
             )
     """
-    staging_dir = staging_dir if staging_dir else os.path.abspath('.compose-stage')
+    staging_dir = staging_dir if staging_dir else os.path.abspath('.cc')
     
     # Show active profiles
     active = cc_get_active_profiles()
@@ -1579,10 +1579,20 @@ def cc_generate_master_compose(
         else:
             print("  - " + entry['dep']['name'] + ": " + entry['compose_path'])
 
-    return {
+    # Build the master compose dict
+    master = {
         'include': includes,
         '_service_to_labels': service_to_labels,
     }
+
+    # Write master compose file to staging directory for inspection/debugging
+    master_compose_path = staging_dir + '/master-compose.yaml'
+    local('mkdir -p "' + staging_dir + '"', quiet=True)
+    yaml_content = encode_yaml(master)
+    local('cat > "' + master_compose_path + '"', stdin=yaml_content, quiet=True)
+    print("\nMaster compose written to: " + master_compose_path)
+
+    return master
 
 # ============================================================================
 # Test Exports

@@ -127,7 +127,7 @@ if __file__ == config.main_path:
     master_compose = cc_generate_master_compose(
         cc_get_plugin(),                # Your plugin with its dependencies
         cli_plugins,                    # Additional plugins from CLI
-        staging_dir=os.path.dirname(__file__) + '/.compose-stage',
+        staging_dir=os.path.dirname(__file__) + '/.cc',
     )
     cc_docker_compose(master_compose)   # Auto-registers services with labels
 ```
@@ -482,7 +482,7 @@ Assembles a dependency tree into a master compose file.
 **Arguments:**
 - `root_plugin`: The root plugin struct from `cc_local_composable()` or `cc_get_plugin()`
 - `cli_plugins`: List of additional plugin structs from `cc_parse_cli_plugins()`
-- `staging_dir`: Directory for modified compose files (default: `.compose-stage/`)
+- `staging_dir`: Directory for modified compose files (default: `.cc/`)
 - `modifications`: List of modification dicts returned by helper functions
 
 **Returns:** Dict with `include` key suitable for `docker_compose(encode_yaml(result))`
@@ -1352,11 +1352,11 @@ if __file__ == config.main_path:
     
     # Register CRDs (use absolute paths)
     crd_mod = k3s.register_crds(crd_paths=[os.path.dirname(__file__) + '/crds'])
-    
+
     master = cc_generate_master_compose(
         cc_get_plugin(),
         cli_plugins,
-        staging_dir=os.path.dirname(__file__) + '/.compose-stage',
+        staging_dir=os.path.dirname(__file__) + '/.cc',
         modifications=[crd_mod],
     )
 
@@ -1386,7 +1386,7 @@ Ensure:
 
 Verify:
 1. The path in `register_crds()` is absolute
-2. The staged compose file has the volume mount (check `.compose-stage/`)
+2. The staged compose file has the volume mount (check `.cc/`)
 3. Files are `.json`, `.yaml`, or `.yml`
 
 ### Wire rules not triggering
@@ -1401,9 +1401,10 @@ Wire rules only apply when the trigger dependency is loaded:
 ## File Structure
 
 ```
-.compose-stage/           # Staged (modified) compose files
+.cc/                      # Staged (modified) compose files
   k3s-apiserver.yaml      # Modified version with overrides applied
   grafana.yaml            # Modified with wire_when rules applied
+  master-compose.yaml     # Final composed configuration with includes
 docker-compose.yaml       # Your local services
 Tiltfile                  # Orchestrator
 ```
