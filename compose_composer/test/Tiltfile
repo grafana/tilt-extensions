@@ -17,6 +17,7 @@ apply_modifications = _internals['apply_modifications']
 add_target_wrapper = _internals['add_target_wrapper']
 flatten_dependency_tree = _internals['flatten_dependency_tree']
 is_dep_included_by_profile = _internals['is_dep_included_by_profile']
+parse_url_with_ref = _internals['parse_url_with_ref']
 
 # ============================================================================
 # Test Helpers
@@ -897,6 +898,52 @@ def test_compose_overrides_method_returns_modification():
     print("  [PASS] test_compose_overrides_method_returns_modification")
 
 # ============================================================================
+# URL Parsing Tests
+# ============================================================================
+
+def test_parse_url_with_ref_https_tag():
+    url, ref = parse_url_with_ref('https://github.com/user/repo@v1.0.0')
+    assert_equals(url, 'https://github.com/user/repo', "URL should be without @ref")
+    assert_equals(ref, 'v1.0.0', "Ref should be v1.0.0")
+    print("  [PASS] test_parse_url_with_ref_https_tag")
+
+def test_parse_url_with_ref_https_branch():
+    url, ref = parse_url_with_ref('https://github.com/user/repo@main')
+    assert_equals(url, 'https://github.com/user/repo', "URL should be without @ref")
+    assert_equals(ref, 'main', "Ref should be main")
+    print("  [PASS] test_parse_url_with_ref_https_branch")
+
+def test_parse_url_with_ref_https_commit():
+    url, ref = parse_url_with_ref('https://github.com/user/repo@abc123def')
+    assert_equals(url, 'https://github.com/user/repo', "URL should be without @ref")
+    assert_equals(ref, 'abc123def', "Ref should be abc123def")
+    print("  [PASS] test_parse_url_with_ref_https_commit")
+
+def test_parse_url_with_ref_no_ref():
+    url, ref = parse_url_with_ref('https://github.com/user/repo')
+    assert_equals(url, 'https://github.com/user/repo', "URL should be unchanged")
+    assert_equals(ref, None, "Ref should be None")
+    print("  [PASS] test_parse_url_with_ref_no_ref")
+
+def test_parse_url_with_ref_file_url():
+    url, ref = parse_url_with_ref('file:///path/to/repo@should-be-ignored')
+    assert_equals(url, 'file:///path/to/repo@should-be-ignored', "file:// URL should not be parsed")
+    assert_equals(ref, None, "file:// URLs should never have refs")
+    print("  [PASS] test_parse_url_with_ref_file_url")
+
+def test_parse_url_with_ref_ssh_url():
+    url, ref = parse_url_with_ref('git@github.com:user/repo@v1.0.0')
+    assert_equals(url, 'git@github.com:user/repo', "Should split on last @")
+    assert_equals(ref, 'v1.0.0', "Ref should be v1.0.0")
+    print("  [PASS] test_parse_url_with_ref_ssh_url")
+
+def test_parse_url_with_ref_empty_ref():
+    url, ref = parse_url_with_ref('https://github.com/user/repo@')
+    assert_equals(url, 'https://github.com/user/repo@', "Empty ref should not be parsed")
+    assert_equals(ref, None, "Empty ref should be None")
+    print("  [PASS] test_parse_url_with_ref_empty_ref")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -977,6 +1024,15 @@ def run_tests():
     print("\n=== compose_overrides Method Tests ===")
     test_compose_overrides_method_exists_on_local()
     test_compose_overrides_method_returns_modification()
+
+    print("\n=== URL Parsing Tests ===")
+    test_parse_url_with_ref_https_tag()
+    test_parse_url_with_ref_https_branch()
+    test_parse_url_with_ref_https_commit()
+    test_parse_url_with_ref_no_ref()
+    test_parse_url_with_ref_file_url()
+    test_parse_url_with_ref_ssh_url()
+    test_parse_url_with_ref_empty_ref()
 
     print("\n" + "=" * 50)
     print("All tests passed!")

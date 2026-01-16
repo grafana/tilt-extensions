@@ -425,7 +425,11 @@ Declare a dependency and load its extension.
 **Arguments:**
 - `name`: Extension name (required)
 - `url`: Extension repo URL - `file://` or `https://` (required)
+  - Can embed ref using `@` separator: `https://github.com/user/repo@branch`
+  - Supports branches, tags, and commit hashes
 - `ref`: Git ref for https:// URLs (default: 'main')
+  - Optional if ref is embedded in URL with `@` syntax
+  - If both url@ref and ref parameter are provided, ref parameter takes precedence
 - `repo_path`: Path within repo (default: name)
 - `compose_overrides`: Static overrides dict (optional)
 - `imports`: List of symbol names to bind to the struct (optional)
@@ -433,6 +437,34 @@ Declare a dependency and load its extension.
 - `labels`: List of Tilt labels for grouping services in the UI (optional, default: `['dependencies']`)
 
 **Returns:** struct with dependency metadata and bound helpers
+
+**URL with Embedded Ref Examples:**
+```python
+# Branch
+k3s = cc_composable(
+    name='k3s-apiserver',
+    url='https://github.com/grafana/composables@main',
+)
+
+# Tag
+mysql = cc_composable(
+    name='mysql',
+    url='https://github.com/grafana/composables@v1.2.3',
+)
+
+# Commit hash
+tempo = cc_composable(
+    name='tempo',
+    url='https://github.com/grafana/composables@abc123def',
+)
+
+# Old style (still supported)
+redis = cc_composable(
+    name='redis',
+    url='https://github.com/grafana/composables',
+    ref='v2.0.0',
+)
+```
 
 **Profile Behavior:**
 - If `profiles=[]` (empty/default): dependency is always included

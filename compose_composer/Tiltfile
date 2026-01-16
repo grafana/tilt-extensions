@@ -27,8 +27,10 @@
 #
 # Dependency schema:
 #   name: str                      - Extension name (required)
-#   url: str                       - Extension repo URL, file:// or https:// (required)
+#   url: str                       - Extension repo URL, file:// or https://
+#                                    Can embed ref: https://github.com/user/repo@branch
 #   ref: str                       - Git ref for https:// URLs (default: 'main')
+#                                    Optional if ref is embedded in URL with @ syntax
 #   repo_path: str                 - Path within repo (default: name)
 #   compose_overrides: dict        - Static overrides merged into compose (optional)
 #   profiles: list                 - Profile names for conditional inclusion (optional, empty=always)
@@ -295,6 +297,46 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
 # Dependency Struct (Remote Plugin Loading)
 # ============================================================================
 
+def _parse_url_with_ref(url):
+    """
+    Parse a URL with optional @ref suffix for git repositories.
+
+    Supports encoding git refs (branch, tag, or commit) directly in the URL
+    using @ separator, following Go modules convention.
+
+    Args:
+        url: URL string, optionally with @ref suffix
+
+    Returns:
+        Tuple of (url_without_ref, ref_or_none)
+
+    Examples:
+        'https://github.com/grafana/composables@v1.2.3'
+          -> ('https://github.com/grafana/composables', 'v1.2.3')
+
+        'https://github.com/grafana/composables@main'
+          -> ('https://github.com/grafana/composables', 'main')
+
+        'https://github.com/grafana/composables'
+          -> ('https://github.com/grafana/composables', None)
+
+        'file:///path/to/composables'
+          -> ('file:///path/to/composables', None)
+
+    Note: file:// URLs never have refs, so @ is never parsed for file URLs.
+    """
+    # file:// URLs don't support refs
+    if url.startswith('file://'):
+        return (url, None)
+
+    # Split on last @ to handle SSH URLs like git@github.com:user/repo@ref
+    if '@' in url:
+        parts = url.rsplit('@', 1)
+        if len(parts) == 2 and parts[1]:  # Ensure ref part is not empty
+            return (parts[0], parts[1])
+
+    return (url, None)
+
 def cc_composable(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
@@ -309,7 +351,10 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     Args:
         name: Extension name (required)
         url: Extension repo URL - file:// or https:// (default: 'https://github.com/grafana/composables')
+             Can include @ref suffix for git repos: 'https://github.com/user/repo@branch'
         ref: Git ref for https:// URLs (default: 'main')
+             Optional if ref is embedded in URL with @ syntax
+             If both url@ref and ref parameter are provided, ref parameter takes precedence
         repo_path: Path within repo (default: name)
         compose_overrides: Static overrides dict (optional)
         imports: List of symbol names to bind to the struct (optional)
@@ -331,28 +376,50 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
           - Bound helper functions from imports list
 
     Example:
-        # Always included (no profiles), services grouped under 'infra'
-        # Uses default URL (grafana/devenv-compose)
+        # New style: ref embedded in URL
         k3s = cc_composable(
             name='k3s-apiserver',
+            url='https://github.com/grafana/composables@v1.2.3',
             imports=['register_crds'],
+            labels=['infra'],
+        )
+
+        # Old style: still supported
+        k3s = cc_composable(
+            name='k3s-apiserver',
+            url='https://github.com/grafana/composables',
+            ref='v1.2.3',
             labels=['infra'],
         )
 
         # Only included when 'dev' or 'full' profile is active
         mysql = cc_composable(
             name='mysql',
+            url='https://github.com/grafana/composables@main',
             profiles=['dev', 'full'],
             labels=['infra'],
         )
 
-        # Using a custom composables repository
+        # Using a custom composables repository (file:// URLs don't support @ref)
         custom = cc_composable(
             name='my-component',
             url='file:///path/to/local/composables',
             labels=['infra'],
         )
     """
+    # Parse URL for embedded ref (url@ref syntax)
+    parsed_url, parsed_ref = _parse_url_with_ref(url)
+
+    # Priority: explicit ref parameter > embedded in URL > None
+    # This maintains backward compatibility while supporting new syntax
+    final_ref = ref
+    if ref == None:
+        final_ref = parsed_ref
+
+    # Use parsed URL (without @ref suffix) for the rest of the function
+    url = parsed_url
+    ref = final_ref
+
     # Use name as default repo_path
     if repo_path == None:
         repo_path = name
@@ -1369,4 +1436,5 @@ def cc_test_exports():
         'flatten_dependency_tree': _flatten_dependency_tree,
         'is_dep_included_by_profile': _is_dep_included_by_profile,
         'get_active_profiles': _get_active_profiles,
+        'parse_url_with_ref': _parse_url_with_ref,
     }
