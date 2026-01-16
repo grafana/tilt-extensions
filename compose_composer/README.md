@@ -1320,7 +1320,7 @@ load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_gener
 # Core Dependencies
 # ============================================================================
 
-COMPOSABLES_URL = 'https://github.com/grafana/composables'
+COMPOSABLES_URL = 'https://github.com/grafana/composables@main'
 
 k3s = cc_composable(
     name='k3s-apiserver',
