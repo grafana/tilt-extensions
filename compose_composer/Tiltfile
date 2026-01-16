@@ -30,14 +30,12 @@
 #   url: str                       - Extension repo URL, file:// or https:// (required)
 #   ref: str                       - Git ref for https:// URLs (default: 'main')
 #   repo_path: str                 - Path within repo (default: name)
-#   get_compose_path_function: str - Function to call for compose path (default: 'get_compose_path')
 #   compose_overrides: dict        - Static overrides merged into compose (optional)
 #   profiles: list                 - Profile names for conditional inclusion (optional, empty=always)
 #
 # Extension exports:
 #   cc_get_plugin() -> struct         - Returns plugin struct from cc_local_composable (required)
 #   get_wire_when() -> dict           - Conditional wiring rules (optional)
-#   get_compose_path() -> str         - Legacy: Returns path to compose file (fallback)
 
 # ============================================================================
 # CLI Argument Parsing
@@ -382,22 +380,15 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
     symbols = load_dynamic('ext://' + name)
     
-    # Try to get plugin info from cc_get_plugin() export
-    compose_path = None
-    nested_deps = []
-    
+    # Get plugin info from cc_get_plugin() export (required)
     get_plugin_fn = symbols.get('cc_get_plugin')
-    if get_plugin_fn:
-        plugin_info = get_plugin_fn()
-        compose_path = plugin_info.compose_path
-        nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
-        modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
-    else:
-        # Fallback to legacy get_compose_path() for backward compatibility
-        get_compose_path_fn = symbols.get('get_compose_path')
-        if get_compose_path_fn:
-            compose_path = get_compose_path_fn()
-        modifications = []
+    if not get_plugin_fn:
+        fail("Extension '" + name + "' must export cc_get_plugin() function")
+
+    plugin_info = get_plugin_fn()
+    compose_path = plugin_info.compose_path
+    nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
+    modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
     
     # Build struct fields
     struct_fields = {
@@ -570,17 +561,10 @@ def cc_parse_cli_plugins(tiltfile_dir):
 
 def _get_compose_path_from_dep(dep):
     """Get compose path from a dependency dict."""
-    # First check if compose_path is directly available (new API)
-    if dep.get('compose_path'):
-        return dep['compose_path']
-    
-    # Fallback to calling get_compose_path function (legacy)
-    symbols = dep.get('symbols', {})
-    fn = symbols.get('get_compose_path')
-    if fn:
-        return fn()
-    
-    fail("Dependency " + dep['name'] + " has no compose_path")
+    compose_path = dep.get('compose_path')
+    if not compose_path:
+        fail("Dependency " + dep['name'] + " has no compose_path")
+    return compose_path
 
 # ============================================================================
 # Deep Merge Utility
