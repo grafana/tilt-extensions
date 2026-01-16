@@ -1160,8 +1160,78 @@ def cc_generate_master_compose(
             plugin_modifications.extend(cli_dict['modifications'])
             print("  Collected " + str(len(cli_dict['modifications'])) + " modification(s) from " + cli_dict['name'])
 
+    # Collect from all dependencies (including nested deps loaded by root/CLI plugins)
+    for dep in dependencies:
+        # Skip root and CLI plugins (already collected above)
+        if dep.get('name') == root_dict.get('name'):
+            continue
+        if dep.get('_from_cli'):
+            continue
+
+        # Collect modifications from nested dependencies
+        if dep.get('modifications'):
+            plugin_modifications.extend(dep['modifications'])
+            print("  Collected " + str(len(dep['modifications'])) + " modification(s) from " + dep['name'] + " (nested dep)")
+
+    # Collect wire_when rules early to extract markers for callbacks
+    # (wire_when rules can contain markers like _database_requirement that need
+    # to be processed by callbacks before compose assembly)
+    print("\nCollecting wiring rules (for markers):")
+    early_wire_when_rules = _collect_wire_when_rules(dependencies)
+
+    # Extract markers from activated wire_when rules
+    # (rules are "activated" when their trigger dependency is present)
+    dep_names = [d.get('name') for d in dependencies]
+    for trigger_dep, rule_sets in early_wire_when_rules.items():
+        # Only process if trigger dependency is loaded
+        if trigger_dep not in dep_names:
+            continue
+
+        print("  " + trigger_dep + " triggers: " + ", ".join([rs['source_dep'] for rs in rule_sets]))
+
+        # Extract markers from all rule sets for this trigger
+        for rule_set in rule_sets:
+            rules = rule_set['rules']
+
+            # Check for marker fields (prefixed with _)
+            for key, value in rules.items():
+                if key.startswith('_') and key != '_target':
+                    # This is a marker, add it to modifications
+                    marker_mod = {key: value, '_target': trigger_dep}
+                    plugin_modifications.append(marker_mod)
+                    print("    -> Extracted marker: " + key + "=" + str(value) + " (from " + rule_set['source_dep'] + ")")
+
     # Merge: plugin modifications first (requirements), then orchestrator modifications (overrides)
     all_modifications = plugin_modifications + modifications
+
+    # ========================================================================
+    # Generic callback interface for dependencies to process accumulated modifications
+    # ========================================================================
+    # ANY dependency can export 'process_accumulated_modifications' to participate.
+    # This is a fully generic mechanism - compose_composer has no knowledge of
+    # specific dependency types (mysql, k3s, etc.).
+    #
+    # Use cases:
+    # - mysql: Extract _database_requirement markers and generate SQL
+    # - k3s: Extract _crd_path markers and mount CRDs
+    # - grafana: Extract plugin requirements and configure provisioning
+    #
+    # The callback receives all modifications collected so far and can return
+    # additional modifications that will be added to the list.
+    for dep in dependencies:
+        dep_symbols = dep.get('symbols', {})
+        process_fn = dep_symbols.get('process_accumulated_modifications')
+
+        if process_fn:
+            # Get orchestrator directory from root plugin
+            orchestrator_dir = os.path.dirname(root_dict.get('compose_path', os.getcwd()))
+
+            # Let dependency process all modifications and generate its own
+            processed_mod = process_fn(all_modifications, orchestrator_dir)
+
+            if processed_mod:
+                all_modifications.append(processed_mod)
+                print("  [" + dep.get('name') + "] processed accumulated modifications")
 
     # Apply modifications from helper functions
     if all_modifications:
