@@ -452,8 +452,19 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     if not get_plugin_fn:
         fail("Extension '" + name + "' must export cc_get_plugin() function")
 
+    # Call the extension's cc_get_plugin() function
     plugin_info = get_plugin_fn()
+
+    # Starlark: Use hasattr() to check for required fields (supported in Tilt's Starlark)
+    if not hasattr(plugin_info, 'compose_path'):
+        fail("Extension '" + name + "' cc_get_plugin() must return struct with 'compose_path' field")
+
     compose_path = plugin_info.compose_path
+
+    # Verify compose_path is not empty/None
+    if not compose_path:
+        fail("Extension '" + name + "' has empty compose_path")
+
     nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
     modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
     
@@ -547,10 +558,38 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
     # Git/HTTPS URLs
     if _is_url(plugin):
         # Extract name from URL (last segment, minus extensions)
-        name = plugin.split('/')[-1].split('#')[0].replace('.git', '')
+        # Starlark: String manipulation with split, rstrip, replace
+        url_without_scheme = plugin.split('://')[-1] if '://' in plugin else plugin
+        url_without_scheme = url_without_scheme.rstrip('/')
+        path_segments = url_without_scheme.split('/')
+
+        # Validate we have a path component
+        # Starlark: Check list length and last element
+        if not path_segments or not path_segments[-1]:
+            fail("Cannot extract plugin name from URL: " + plugin)
+
+        # Extract name from last path segment, removing .git suffix and ref
+        # Handle both @ and # for refs/branches
+        last_segment = path_segments[-1]
+        # Remove @ref if present (e.g., repo@main)
+        if '@' in last_segment:
+            last_segment = last_segment.split('@')[0]
+        # Remove #ref if present (e.g., repo#branch)
+        if '#' in last_segment:
+            last_segment = last_segment.split('#')[0]
+        # Remove .git suffix
+        name = last_segment.replace('.git', '')
+
+        # Ensure name is not empty after processing
+        if not name:
+            fail("Cannot extract plugin name from URL: " + plugin)
+
         return {'name': name, 'url': plugin, '_from_cli': True}
     
     # Resolve local paths to absolute
+    # Note: Path traversal (../) is intentional and expected for local development.
+    # Users commonly reference plugins with relative paths like '../other-plugin'.
+    # Security: This is local development tooling; file:// URLs can access any local path.
     if plugin.startswith('/'):
         path = plugin
     elif plugin.startswith('.'):
@@ -628,9 +667,18 @@ def cc_parse_cli_plugins(tiltfile_dir):
 
 def _get_compose_path_from_dep(dep):
     """Get compose path from a dependency dict."""
+    # Starlark: Validate type before accessing as dict
+    if type(dep) != 'dict':
+        fail("Expected dependency dict, got: " + str(type(dep)))
+
+    # Safe dict access with default value for name (in case it's missing)
+    dep_name = dep.get('name', '<unknown>')
     compose_path = dep.get('compose_path')
+
+    # Check compose_path exists (also catches None and empty string)
     if not compose_path:
-        fail("Dependency " + dep['name'] + " has no compose_path")
+        fail("Dependency '" + dep_name + "' has no compose_path")
+
     return compose_path
 
 # ============================================================================
@@ -723,7 +771,18 @@ def _deep_merge(base, override):
     return result
 
 def _deep_copy(obj):
-    """Create a deep copy of a dict/list structure using YAML round-trip."""
+    """
+    Create a deep copy of a dict/list structure using YAML round-trip.
+
+    Starlark note: This approach is intentional because:
+    1. Starlark has no native deep copy function
+    2. YAML round-trip preserves all compose-compatible types
+    3. Performance trade-off: correctness > speed for this use case
+    4. Alternative (recursive copy) would be complex and error-prone
+
+    This method ensures proper isolation between base and override dicts
+    during merge operations, preventing unintended mutations.
+    """
     return decode_yaml(encode_yaml(obj))
 
 # ============================================================================
@@ -744,19 +803,70 @@ def _collect_wire_when_rules(loaded_deps):
         
         if not get_wire_when:
             continue
-        
+
+        # Call get_wire_when() from the extension
         wire_when = get_wire_when()
-        
+
+        # Starlark: Type check before using as dict
+        if type(wire_when) != 'dict':
+            print("  Warning: " + dep['name'] + " get_wire_when() returned non-dict, skipping")
+            continue
+
+        # Iterate over trigger dependencies
+        # Starlark: .items() is supported on dicts
         for trigger_dep_name, rules in wire_when.items():
+            # Validate rules structure
+            if type(rules) != 'dict':
+                print("  Warning: wire_when rules for '" + trigger_dep_name + "' are not a dict, skipping")
+                continue
+
             if trigger_dep_name not in all_rules:
                 all_rules[trigger_dep_name] = []
-            
+
             all_rules[trigger_dep_name].append({
                 'source_dep': dep['name'],
                 'rules': rules,
             })
     
     return all_rules
+
+def _is_named_volume(vol_name):
+    """
+    Determine if volume source is a named volume vs bind mount.
+    Named volumes are Docker-managed; bind mounts are host paths.
+
+    Starlark: Uses string methods (startswith, in) which are fully supported.
+    """
+    if not vol_name:
+        return False
+
+    # Absolute unix paths (bind mount)
+    if vol_name.startswith('/'):
+        return False
+
+    # Relative paths (bind mount)
+    if vol_name.startswith('.'):
+        return False
+
+    # Windows paths: C:, D:, etc. (bind mount)
+    # Starlark: len() is supported
+    if len(vol_name) >= 2 and vol_name[1] == ':':
+        return False
+
+    # UNC paths: \\server\share (bind mount)
+    if vol_name.startswith('\\\\'):
+        return False
+
+    # Environment variables (dynamic bind mount)
+    if '${' in vol_name or '$(' in vol_name:
+        return False
+
+    # Tilde expansion (bind mount)
+    if vol_name.startswith('~'):
+        return False
+
+    # If none of the above, it's a named volume
+    return True
 
 def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names):
     """
@@ -814,27 +924,37 @@ def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_n
                 if 'volumes' in service_mods:
                     existing = svc.get('volumes', [])
                     for vol in service_mods['volumes']:
-                        # Extract volume name for top-level declaration
-                        vol_name = vol.split(':')[0] if ':' in vol else None
-                        
-                        # Check for duplicate mount points
-                        mount_point = vol.split(':')[1] if ':' in vol else vol
+                        # Starlark: Parse volume spec properly: [source:]target[:mode]
+                        vol_parts = vol.split(':')
+                        # Starlark: List indexing with conditional (ternary-like with if/else)
+                        new_mount = vol_parts[1] if len(vol_parts) >= 2 else vol_parts[0]
+                        new_source = vol_parts[0] if len(vol_parts) >= 2 else None
+
+                        # Check for EXACT duplicate mount points (not substring match)
                         already_mounted = False
-                        for v in existing:
-                            if mount_point in str(v):
+                        for existing_vol in existing:
+                            # Starlark: Convert to string for safety, then parse
+                            existing_parts = str(existing_vol).split(':')
+                            existing_mount = existing_parts[1] if len(existing_parts) >= 2 else existing_parts[0]
+
+                            # CRITICAL FIX: Use == for exact match, not 'in' for substring
+                            if existing_mount == new_mount:
                                 already_mounted = True
                                 break
+
                         if not already_mounted:
                             existing.append(vol)
-                        
-                        # Always ensure named volumes are in top-level volumes section
-                        # Named volumes are in format "volume_name:/path" (not starting with / or .)
-                        if vol_name and not vol_name.startswith('/') and not vol_name.startswith('.'):
+
+                        # Use helper for named volume detection (improved heuristic)
+                        if new_source and _is_named_volume(new_source):
+                            # Ensure top-level volumes section exists
                             if 'volumes' not in compose_yaml:
                                 compose_yaml['volumes'] = {}
-                            if vol_name not in compose_yaml['volumes']:
-                                # Add as empty dict (Docker Compose default)
-                                compose_yaml['volumes'][vol_name] = None
+
+                            # Add named volume if not already declared
+                            if new_source not in compose_yaml['volumes']:
+                                # Starlark: None is supported for empty volume config
+                                compose_yaml['volumes'][new_source] = None
                     
                     svc['volumes'] = existing
                     modified = True
@@ -842,13 +962,30 @@ def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_n
                 # Apply environment
                 if 'environment' in service_mods:
                     existing = svc.get('environment', {})
+                    # Starlark: Type check using string comparison
                     if type(existing) == 'list':
                         # Convert list format to dict
                         env_dict = {}
                         for e in existing:
-                            if '=' in str(e):
-                                parts = str(e).split('=', 1)
-                                env_dict[parts[0]] = parts[1]
+                            # Starlark: Convert to string for safety
+                            e_str = str(e)
+
+                            # Validate format: KEY=VALUE
+                            if '=' not in e_str:
+                                print("  [wire_when] Warning: skipping malformed environment entry '" + e_str + "' (missing '=')")
+                                continue
+
+                            # Starlark: split with maxsplit=1 to handle values with '='
+                            parts = e_str.split('=', 1)
+
+                            # Validate key is not empty
+                            if not parts[0]:
+                                print("  [wire_when] Warning: skipping entry with empty key")
+                                continue
+
+                            # Add to dict (empty value if no '=' found, though we checked above)
+                            env_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
+
                         existing = env_dict
                     for k, v in service_mods['environment'].items():
                         existing[k] = v
@@ -858,13 +995,30 @@ def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_n
                 # Apply labels
                 if 'labels' in service_mods:
                     existing = svc.get('labels', {})
+                    # Starlark: Type check using string comparison
                     if type(existing) == 'list':
                         # Convert list format to dict
                         labels_dict = {}
                         for label in existing:
-                            if '=' in str(label):
-                                parts = str(label).split('=', 1)
-                                labels_dict[parts[0]] = parts[1]
+                            # Starlark: Convert to string for safety
+                            label_str = str(label)
+
+                            # Validate format: KEY=VALUE
+                            if '=' not in label_str:
+                                print("  [wire_when] Warning: skipping malformed label entry '" + label_str + "' (missing '=')")
+                                continue
+
+                            # Starlark: split with maxsplit=1 to handle values with '='
+                            parts = label_str.split('=', 1)
+
+                            # Validate key is not empty
+                            if not parts[0]:
+                                print("  [wire_when] Warning: skipping label with empty key")
+                                continue
+
+                            # Add to dict
+                            labels_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
+
                         existing = labels_dict
                     for k, v in service_mods['labels'].items():
                         existing[k] = v
@@ -1019,8 +1173,16 @@ def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles
     
     # Process root's dependencies first (depth-first)
     root_dict = _struct_to_dict(root) if type(root) == 'struct' else root
-    
+
     for dep in root_dict.get('dependencies', []):
+        # Starlark: Check for None explicitly
+        if dep == None:
+            fail("Dependency list contains None in '" + root_dict.get('name', '<unknown>') + "'")
+
+        # Starlark: Use multiple conditions (no 'in' operator for types)
+        if type(dep) != 'struct' and type(dep) != 'dict':
+            fail("Invalid dependency type in '" + root_dict.get('name', '<unknown>') + "': expected struct or dict, got " + str(type(dep)))
+
         dep_dict = _struct_to_dict(dep) if type(dep) == 'struct' else dep
         
         # Check if dependency should be included based on profiles
@@ -1275,7 +1437,13 @@ def cc_generate_master_compose(
 
         if process_fn:
             # Get orchestrator directory from root plugin
-            orchestrator_dir = os.path.dirname(root_dict.get('compose_path', os.getcwd()))
+            # Starlark: Check for None/empty before calling os.path.dirname()
+            root_compose_path = root_dict.get('compose_path')
+            if root_compose_path:
+                orchestrator_dir = os.path.dirname(root_compose_path)
+            else:
+                # Fallback to current working directory if compose_path not available
+                orchestrator_dir = os.getcwd()
 
             # Let dependency process all modifications and generate its own
             processed_mod = process_fn(all_modifications, orchestrator_dir)
@@ -1437,4 +1605,6 @@ def cc_test_exports():
         'is_dep_included_by_profile': _is_dep_included_by_profile,
         'get_active_profiles': _get_active_profiles,
         'parse_url_with_ref': _parse_url_with_ref,
+        'get_compose_path_from_dep': _get_compose_path_from_dep,
+        'is_named_volume': _is_named_volume,
     }
