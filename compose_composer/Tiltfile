@@ -689,6 +689,8 @@ def _get_compose_path_from_dep(dep):
 _CONCAT_ENV_VARS = [
     'WEBHOOK_OPERATORS',  # Multiple webhook operators (op1:ns1,op2:ns2)
     'API_GROUPS',          # For future use with API aggregation
+    'GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS',  # Comma-separated plugin IDs
+    'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
 ]
 
 def _should_concatenate_string(key, base_val, override_val):
