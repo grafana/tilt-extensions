@@ -10,14 +10,14 @@
 #   - compose_overrides that are deep-merged when dependencies overlap
 #
 # Usage:
-#   load('ext://compose_composer', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_docker_compose')
+#   load('ext://compose_composer', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_docker_compose')
 #
-#   k3s = cc_composable(name='k3s-apiserver', url='...')
-#   mysql = cc_composable(name='mysql', url='...', profiles=['dev', 'full'])  # Only in dev/full
-#   def cc_get_plugin():
-#       return cc_local_composable('my-plugin', os.path.dirname(__file__) + '/compose.yaml', k3s, mysql)
+#   k3s = cc_import(name='k3s-apiserver', url='...')
+#   mysql = cc_import(name='mysql', url='...', profiles=['dev', 'full'])  # Only in dev/full
+#   def cc_export():
+#       return cc_create('my-plugin', os.path.dirname(__file__) + '/compose.yaml', k3s, mysql)
 #   
-#   master_compose = cc_generate_master_compose(cc_get_plugin(), cc_parse_cli_plugins(...))
+#   master_compose = cc_generate_master_compose(cc_export(), cc_parse_cli_plugins(...))
 #   cc_docker_compose(encode_yaml(master_compose))  # Automatically passes COMPOSE_PROFILES
 #
 # CLI Usage:
@@ -36,7 +36,7 @@
 #   profiles: list                 - Profile names for conditional inclusion (optional, empty=always)
 #
 # Extension exports:
-#   cc_get_plugin() -> struct         - Returns plugin struct from cc_local_composable (required)
+#   cc_export() -> struct         - Returns plugin struct from cc_create (required)
 #   get_wire_when() -> dict           - Conditional wiring rules (optional)
 
 # ============================================================================
@@ -112,7 +112,7 @@ def cc_docker_compose(master_compose, **kwargs):
         **kwargs: Additional arguments passed to docker_compose()
 
     Example:
-        master = cc_generate_master_compose(cc_get_plugin(), cli_plugins)
+        master = cc_generate_master_compose(cc_export(), cli_plugins)
         cc_docker_compose(master)  # Pass dict directly for auto-registration
 
         # Legacy pattern (skips auto-registration with warning):
@@ -194,12 +194,12 @@ def _is_dep_included_by_profile(dep_profiles, active_profiles):
 # Local Compose (Plugin Declaration)
 # ============================================================================
 
-def cc_local_composable(name, compose_path, *dependencies, **kwargs):
+def cc_create(name, compose_path, *dependencies, **kwargs):
     """
     Declare a local plugin with its compose path and dependencies.
 
-    Every plugin should export a cc_get_plugin() function that returns
-    a cc_local_composable struct. This creates a uniform dependency tree model.
+    Every plugin should export a cc_export() function that returns
+    a cc_create struct. This creates a uniform dependency tree model.
 
     Args:
         name: Plugin name (required)
@@ -242,16 +242,16 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
 
     Example:
         # Always included (no profiles), services grouped under 'app'
-        def cc_get_plugin():
-            return cc_local_composable(
+        def cc_export():
+            return cc_create(
                 'grafana',
                 os.path.dirname(__file__) + '/grafana.yaml',
                 labels=['app'],
             )
 
         # Only included when 'dev' or 'full' profile is active
-        def cc_get_plugin():
-            return cc_local_composable(
+        def cc_export():
+            return cc_create(
                 'debug-tools',
                 os.path.dirname(__file__) + '/docker-compose.yaml',
                 profiles=['dev', 'full'],
@@ -259,8 +259,8 @@ def cc_local_composable(name, compose_path, *dependencies, **kwargs):
             )
 
         # With helper-based modifications
-        def cc_get_plugin():
-            return cc_local_composable(
+        def cc_export():
+            return cc_create(
                 'service-model',
                 os.path.dirname(__file__) + '/docker-compose.yaml',
                 k3s, mysql, grafana,
@@ -337,15 +337,15 @@ def _parse_url_with_ref(url):
 
     return (url, None)
 
-def cc_composable(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
+def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
 
     This function registers the extension with Tilt, loads its symbols,
     and returns a struct with bound helper functions.
 
-    The extension should export a cc_get_plugin() function that returns a
-    cc_local_composable struct. This provides the compose_path and any nested
+    The extension should export a cc_export() function that returns a
+    cc_create struct. This provides the compose_path and any nested
     dependencies the extension has.
 
     Args:
@@ -367,8 +367,8 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     Returns:
         struct with:
           - name, url, ref, repo_path, compose_overrides (dependency metadata)
-          - compose_path: From extension's cc_get_plugin() if available
-          - dependencies: From extension's cc_get_plugin() if available
+          - compose_path: From extension's cc_export() if available
+          - dependencies: From extension's cc_export() if available
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
           - compose_overrides(): Bound method for specifying overrides (returns modification dict)
@@ -377,7 +377,7 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
 
     Example:
         # New style: ref embedded in URL
-        k3s = cc_composable(
+        k3s = cc_import(
             name='k3s-apiserver',
             url='https://github.com/grafana/composables@v1.2.3',
             imports=['register_crds'],
@@ -385,7 +385,7 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
         )
 
         # Old style: still supported
-        k3s = cc_composable(
+        k3s = cc_import(
             name='k3s-apiserver',
             url='https://github.com/grafana/composables',
             ref='v1.2.3',
@@ -393,7 +393,7 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
         )
 
         # Only included when 'dev' or 'full' profile is active
-        mysql = cc_composable(
+        mysql = cc_import(
             name='mysql',
             url='https://github.com/grafana/composables@main',
             profiles=['dev', 'full'],
@@ -401,7 +401,7 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
         )
 
         # Using a custom composables repository (file:// URLs don't support @ref)
-        custom = cc_composable(
+        custom = cc_import(
             name='my-component',
             url='file:///path/to/local/composables',
             labels=['infra'],
@@ -447,17 +447,17 @@ def cc_composable(name, url='https://github.com/grafana/composables', ref=None, 
     v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
     symbols = load_dynamic('ext://' + name)
     
-    # Get plugin info from cc_get_plugin() export (required)
-    get_plugin_fn = symbols.get('cc_get_plugin')
-    if not get_plugin_fn:
-        fail("Extension '" + name + "' must export cc_get_plugin() function")
+    # Get plugin info from cc_export() export (required)
+    export_fn = symbols.get('cc_export')
+    if not export_fn:
+        fail("Extension '" + name + "' must export cc_export() function")
 
-    # Call the extension's cc_get_plugin() function
-    plugin_info = get_plugin_fn()
+    # Call the extension's cc_export() function
+    plugin_info = export_fn()
 
     # Starlark: Use hasattr() to check for required fields (supported in Tilt's Starlark)
     if not hasattr(plugin_info, 'compose_path'):
-        fail("Extension '" + name + "' cc_get_plugin() must return struct with 'compose_path' field")
+        fail("Extension '" + name + "' cc_export() must return struct with 'compose_path' field")
 
     compose_path = plugin_info.compose_path
 
@@ -521,7 +521,7 @@ def _compose_overrides_method(overrides):
     Base compose_overrides method that all composables get bound.
 
     This provides a consistent API for specifying compose overrides that can be
-    used in the modifications list of cc_local_composable().
+    used in the modifications list of cc_create().
 
     Args:
         overrides: Dict of compose overrides (services, volumes, networks, etc.)
@@ -622,7 +622,7 @@ def cc_parse_cli_plugins(tiltfile_dir):
                       Typically: os.path.dirname(__file__)
     
     Returns:
-        List of dependency structs (same type as returned by cc_composable())
+        List of dependency structs (same type as returned by cc_import())
     """
     plugins = _cfg.get('args', [])
     deps = []
@@ -631,8 +631,8 @@ def cc_parse_cli_plugins(tiltfile_dir):
         spec = _resolve_plugin_spec(plugin, tiltfile_dir)
         print("CLI plugin: " + spec['name'] + " -> " + spec['url'])
         
-        # Create a dependency struct (this also loads its symbols/cc_get_plugin)
-        dep = cc_composable(
+        # Create a dependency struct (this also loads its symbols/cc_export)
+        dep = cc_import(
             name=spec['name'],
             url=spec['url'],
             repo_path=spec.get('repo_path', spec['name']),
@@ -1074,7 +1074,7 @@ def _struct_to_dict(dep_struct):
     """
     Convert a dependency struct to a dict for internal processing.
 
-    Structs from cc_composable(), cc_local_composable(), or cc_parse_cli_plugins() need
+    Structs from cc_import(), cc_create(), or cc_parse_cli_plugins() need
     to be converted to dicts for the internal processing pipeline.
     """
     result = {
@@ -1252,10 +1252,10 @@ def cc_generate_master_compose(
     - Wiring rules are defined declaratively in extensions (get_wire_when)
     - Dependencies declare their own dependencies via get_plugin()
     - compose_overrides are deep-merged when dependencies overlap
-    - Modifications can be declared in plugin definitions (cc_local_composable)
+    - Modifications can be declared in plugin definitions (cc_create)
 
     Args:
-        root_plugin: The root plugin struct from cc_local_composable() or cc_get_plugin().
+        root_plugin: The root plugin struct from cc_create() or cc_export().
                      Contains compose_path, dependencies, and optional modifications.
         cli_plugins: List of additional plugin structs from cc_parse_cli_plugins().
                      Each may contain its own modifications.
@@ -1266,7 +1266,7 @@ def cc_generate_master_compose(
                        '_target' indicating which dependency to modify.
 
                        This parameter is for ORCHESTRATOR-SPECIFIC modifications
-                       only. Plugin requirements should be declared in cc_local_composable's
+                       only. Plugin requirements should be declared in cc_create's
                        modifications parameter for symmetric orchestration.
 
     Returns:
@@ -1279,7 +1279,7 @@ def cc_generate_master_compose(
 
         This function collects modifications from two sources and applies them in order:
 
-        1. Plugin-declared modifications (from cc_local_composable):
+        1. Plugin-declared modifications (from cc_create):
            - Collected from root_plugin.modifications
            - Collected from each cli_plugin.modifications
            - Applied first (define requirements)
@@ -1293,15 +1293,15 @@ def cc_generate_master_compose(
         Order: plugin_modifications + orchestrator_modifications
 
         This two-level system allows plugins to declare their base requirements
-        once (in cc_get_plugin), while orchestrators can add environment-specific
+        once (in cc_export), while orchestrators can add environment-specific
         overrides when needed.
 
     Example (Plugin-declared modifications - RECOMMENDED):
-        k3s = cc_composable(name='k3s-apiserver', url='...', imports=['register_crds'])
-        mysql = cc_composable(name='mysql', url='...')
+        k3s = cc_import(name='k3s-apiserver', url='...', imports=['register_crds'])
+        mysql = cc_import(name='mysql', url='...')
 
-        def cc_get_plugin():
-            return cc_local_composable(
+        def cc_export():
+            return cc_create(
                 'service-model',
                 os.path.dirname(__file__) + '/docker-compose.yaml',
                 k3s, mysql,
@@ -1316,14 +1316,14 @@ def cc_generate_master_compose(
             cli_plugins = cc_parse_cli_plugins(os.path.dirname(__file__))
 
             master = cc_generate_master_compose(
-                cc_get_plugin(),  # Has plugin-level modifications
+                cc_export(),  # Has plugin-level modifications
                 cli_plugins,       # May have their own modifications
                 modifications=[],  # Orchestrator-specific (usually empty)
             )
 
     Example (Orchestrator-level modifications - for overrides only):
         if __file__ == config.main_path:
-            plugin = cc_get_plugin()
+            plugin = cc_export()
 
             # Environment-specific debug modifications
             debug_mods = [

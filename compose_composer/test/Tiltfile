@@ -2,7 +2,7 @@
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
 
-load('../Tiltfile', 'cc_test_exports', 'cc_composable', 'cc_local_composable', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
+load('../Tiltfile', 'cc_test_exports', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
 
 # Get internal functions for testing
 _internals = cc_test_exports()
@@ -124,16 +124,16 @@ def test_deep_merge_compose_overrides():
 # local_compose Tests
 # ============================================================================
 
-def test_cc_local_composable_basic():
+def test_cc_create_basic():
     """Test creating a basic cc_local_composable struct."""
-    plugin = cc_local_composable('my-plugin', '/path/to/compose.yaml')
+    plugin = cc_create('my-plugin', '/path/to/compose.yaml')
     assert_equals(plugin.name, 'my-plugin')
     assert_equals(plugin.compose_path, '/path/to/compose.yaml')
     assert_equals(len(plugin.dependencies), 0)
     assert_true(plugin._is_local)
-    print("  [PASS] test_cc_local_composable_basic")
+    print("  [PASS] test_cc_create_basic")
 
-def test_cc_local_composable_with_dependencies():
+def test_cc_create_with_dependencies():
     """Test creating cc_local_composable with dependencies."""
     dep1 = struct(
         name='dep1',
@@ -160,11 +160,11 @@ def test_cc_local_composable_with_dependencies():
         _is_local=False,
     )
     
-    plugin = cc_local_composable('my-plugin', '/path/to/compose.yaml', dep1, dep2)
+    plugin = cc_create('my-plugin', '/path/to/compose.yaml', dep1, dep2)
     assert_equals(len(plugin.dependencies), 2)
     assert_equals(plugin.dependencies[0].name, 'dep1')
     assert_equals(plugin.dependencies[1].name, 'dep2')
-    print("  [PASS] test_cc_local_composable_with_dependencies")
+    print("  [PASS] test_cc_create_with_dependencies")
 
 # ============================================================================
 # flatten_dependency_tree Tests
@@ -185,7 +185,7 @@ def test_flatten_dependency_tree_simple():
         _is_local=False,
     )
     
-    root = cc_local_composable('root', '/path/root.yaml', dep1)
+    root = cc_create('root', '/path/root.yaml', dep1)
     result = flatten_dependency_tree(root, [])
     
     # Should have dep1 first, then root
@@ -222,7 +222,7 @@ def test_flatten_dependency_tree_nested():
         _is_local=False,
     )
     
-    root = cc_local_composable('root', '/path/root.yaml', dep_outer)
+    root = cc_create('root', '/path/root.yaml', dep_outer)
     result = flatten_dependency_tree(root, [])
     
     # Should be: inner, outer, root (depth-first)
@@ -273,7 +273,7 @@ def test_flatten_dependency_tree_deduplicates():
         _is_local=False,
     )
     
-    root = cc_local_composable('root', '/path/root.yaml', dep1, dep2)
+    root = cc_create('root', '/path/root.yaml', dep1, dep2)
     result = flatten_dependency_tree(root, [])
     
     # Should be: shared (once), dep1, dep2, root
@@ -311,7 +311,7 @@ def test_flatten_dependency_tree_with_cli_plugins():
         _is_local=False,
     )
     
-    root = cc_local_composable('root', '/path/root.yaml', dep1)
+    root = cc_create('root', '/path/root.yaml', dep1)
     result = flatten_dependency_tree(root, [cli_plugin])
     
     # Should have: dep1, root, cli-plugin
@@ -580,9 +580,9 @@ def test_struct_to_dict_basic():
     assert_true('symbols' in result, "Should have symbols key")
     print("  [PASS] test_struct_to_dict_basic")
 
-def test_struct_to_dict_cc_local_composable():
+def test_struct_to_dict_cc_create():
     """Test converting a cc_local_composable struct to dict."""
-    plugin = cc_local_composable('my-plugin', '/path/to/compose.yaml')
+    plugin = cc_create('my-plugin', '/path/to/compose.yaml')
     result = struct_to_dict(plugin)
     assert_equals(result['name'], 'my-plugin')
     assert_equals(result['compose_path'], '/path/to/compose.yaml')
@@ -712,47 +712,47 @@ def test_is_dep_included_with_profiles_needs_match():
     assert_true(not is_dep_included_by_profile(['dev', 'full'], ['staging', 'test']), "No match = excluded")
     print("  [PASS] test_is_dep_included_with_profiles_needs_match")
 
-def test_cc_local_composable_with_profiles():
+def test_cc_create_with_profiles():
     """Test creating cc_local_composable with profiles."""
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
         profiles=['dev', 'staging'],
     )
     assert_equals(plugin.name, 'my-plugin')
     assert_equals(plugin.profiles, ['dev', 'staging'])
-    print("  [PASS] test_cc_local_composable_with_profiles")
+    print("  [PASS] test_cc_create_with_profiles")
 
-def test_cc_local_composable_with_labels():
+def test_cc_create_with_labels():
     """Test creating cc_local_composable with labels."""
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
         labels=['app'],
     )
     assert_equals(plugin.name, 'my-plugin')
     assert_equals(plugin.labels, ['app'])
-    print("  [PASS] test_cc_local_composable_with_labels")
+    print("  [PASS] test_cc_create_with_labels")
 
-def test_cc_local_composable_labels_default_empty():
+def test_cc_create_labels_default_empty():
     """Test that labels default to empty list."""
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
     )
     assert_equals(plugin.labels, [])
-    print("  [PASS] test_cc_local_composable_labels_default_empty")
+    print("  [PASS] test_cc_create_labels_default_empty")
 
 # ============================================================================
 # Modifications Tests
 # ============================================================================
 
-def test_cc_local_composable_with_modifications():
+def test_cc_create_with_modifications():
     """Test creating cc_local_composable with modifications parameter."""
     # Create a mock modification dict
     mod = {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['test:/test']}}}
 
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
         modifications=[mod],
@@ -760,23 +760,23 @@ def test_cc_local_composable_with_modifications():
     assert_equals(plugin.name, 'my-plugin')
     assert_equals(len(plugin.modifications), 1)
     assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
-    print("  [PASS] test_cc_local_composable_with_modifications")
+    print("  [PASS] test_cc_create_with_modifications")
 
-def test_cc_local_composable_modifications_default_empty():
+def test_cc_create_modifications_default_empty():
     """Test that modifications default to empty list."""
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
     )
     assert_equals(plugin.modifications, [])
-    print("  [PASS] test_cc_local_composable_modifications_default_empty")
+    print("  [PASS] test_cc_create_modifications_default_empty")
 
-def test_cc_local_composable_multiple_modifications():
+def test_cc_create_multiple_modifications():
     """Test plugin with multiple modifications."""
     mod1 = {'_target': 'k3s-apiserver', 'services': {'crd-loader': {'volumes': ['crds1:/crds1']}}}
     mod2 = {'_target': 'mysql', 'services': {'db': {'environment': ['TEST=1']}}}
 
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
         modifications=[mod1, mod2],
@@ -784,12 +784,12 @@ def test_cc_local_composable_multiple_modifications():
     assert_equals(len(plugin.modifications), 2)
     assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
     assert_equals(plugin.modifications[1]['_target'], 'mysql')
-    print("  [PASS] test_cc_local_composable_multiple_modifications")
+    print("  [PASS] test_cc_create_multiple_modifications")
 
 def test_struct_to_dict_preserves_modifications():
     """Test that struct_to_dict preserves modifications field."""
     mod = {'_target': 'k3s-apiserver', 'services': {'test': {}}}
-    plugin = cc_local_composable(
+    plugin = cc_create(
         'my-plugin',
         '/path/to/compose.yaml',
         modifications=[mod],
@@ -830,7 +830,7 @@ def test_flatten_dependency_tree_with_profiles():
         _is_local=False,
     )
     
-    root = cc_local_composable('root', '/path/root.yaml', always_included, dev_only)
+    root = cc_create('root', '/path/root.yaml', always_included, dev_only)
     
     # With no active profiles, only 'always' should be included
     result = flatten_dependency_tree(root, [], None, [])
@@ -860,7 +860,7 @@ def test_cc_get_active_profiles():
 
 def test_compose_overrides_method_exists_on_local():
     """Test that compose_overrides() method exists on local composables."""
-    local = cc_local_composable(
+    local = cc_create(
         'test-local',
         os.path.dirname(__file__) + '/test-compose.yaml',
     )
@@ -876,7 +876,7 @@ def test_compose_overrides_method_exists_on_local():
 def test_compose_overrides_method_returns_modification():
     """Test that compose_overrides() method returns proper modification dict."""
     # Use local composable to avoid circular dependency
-    mock_dep = cc_local_composable('mock-dep', '/path/to/compose.yaml')
+    mock_dep = cc_create('mock-dep', '/path/to/compose.yaml')
 
     overrides = {
         'services': {
@@ -1318,7 +1318,7 @@ def test_resolve_plugin_spec_git_ssh():
 def test_collect_wire_when_rules_with_valid_dict():
     """Test that valid wire_when rules are collected."""
     # Create mock dependencies with get_wire_when
-    dep1 = struct_to_dict(cc_local_composable('dep1', '/path/to/dep1.yaml'))
+    dep1 = struct_to_dict(cc_create('dep1', '/path/to/dep1.yaml'))
     dep1['symbols'] = {
         'get_wire_when': lambda: {
             'trigger': {
@@ -1387,8 +1387,8 @@ def test_get_compose_path_from_dep_none_path():
 
 def test_flatten_dependency_tree_valid_struct_dep():
     """Test that flatten handles valid struct dependencies correctly."""
-    dep1 = cc_local_composable('dep1', '/path/to/dep1.yaml')
-    root = cc_local_composable('root', '/path/to/root.yaml', dep1)
+    dep1 = cc_create('dep1', '/path/to/dep1.yaml')
+    root = cc_create('root', '/path/to/root.yaml', dep1)
     root_dict = struct_to_dict(root)
 
     result = flatten_dependency_tree(root_dict, [], {}, [])
@@ -1398,7 +1398,7 @@ def test_flatten_dependency_tree_valid_struct_dep():
 
 def test_flatten_dependency_tree_valid_dict_dep():
     """Test that flatten handles valid dict dependencies correctly."""
-    root = struct_to_dict(cc_local_composable('root', '/path/to/root.yaml'))
+    root = struct_to_dict(cc_create('root', '/path/to/root.yaml'))
     # Dependencies as dicts should work
     result = flatten_dependency_tree(root, [], {}, [])
     assert_true(type(result) == 'list', "Should return a list")
@@ -1418,8 +1418,8 @@ def run_tests():
     test_deep_merge_compose_overrides()
     
     print("\n=== cc_local_composable Tests ===")
-    test_cc_local_composable_basic()
-    test_cc_local_composable_with_dependencies()
+    test_cc_create_basic()
+    test_cc_create_with_dependencies()
     
     print("\n=== flatten_dependency_tree Tests ===")
     test_flatten_dependency_tree_simple()
@@ -1453,7 +1453,7 @@ def run_tests():
     
     print("\n=== struct_to_dict Tests ===")
     test_struct_to_dict_basic()
-    test_struct_to_dict_cc_local_composable()
+    test_struct_to_dict_cc_create()
     test_struct_to_dict_preserves_compose_overrides()
     
     print("\n=== apply_modifications Tests ===")
@@ -1468,18 +1468,18 @@ def run_tests():
     print("\n=== Profile Tests ===")
     test_is_dep_included_no_profiles_always_included()
     test_is_dep_included_with_profiles_needs_match()
-    test_cc_local_composable_with_profiles()
+    test_cc_create_with_profiles()
     test_flatten_dependency_tree_with_profiles()
     test_cc_get_active_profiles()
 
     print("\n=== Label Tests ===")
-    test_cc_local_composable_with_labels()
-    test_cc_local_composable_labels_default_empty()
+    test_cc_create_with_labels()
+    test_cc_create_labels_default_empty()
 
     print("\n=== Modifications Tests ===")
-    test_cc_local_composable_with_modifications()
-    test_cc_local_composable_modifications_default_empty()
-    test_cc_local_composable_multiple_modifications()
+    test_cc_create_with_modifications()
+    test_cc_create_modifications_default_empty()
+    test_cc_create_multiple_modifications()
     test_struct_to_dict_preserves_modifications()
 
     print("\n=== compose_overrides Method Tests ===")
