@@ -870,6 +870,105 @@ def _is_named_volume(vol_name):
     # If none of the above, it's a named volume
     return True
 
+def _parse_volume_mount(volume_spec):
+    """
+    Parse Docker volume mount: [source:]target[:mode]
+    Returns: {'source': str|None, 'target': str, 'mode': str|None}
+    """
+    if not volume_spec or type(volume_spec) != 'string':
+        return {'source': None, 'target': '', 'mode': None}
+
+    parts = volume_spec.split(':')
+
+    if len(parts) == 1:
+        return {'source': None, 'target': parts[0], 'mode': None}
+    elif len(parts) == 2:
+        # Disambiguate: if second part is ro/rw/z/Z, it's target:mode
+        if parts[1] in ['ro', 'rw', 'z', 'Z']:
+            return {'source': None, 'target': parts[0], 'mode': parts[1]}
+        else:
+            return {'source': parts[0], 'target': parts[1], 'mode': None}
+    else:
+        return {'source': parts[0], 'target': parts[1], 'mode': parts[2] if len(parts) > 2 else None}
+
+def _validate_volume_mounts(services_dict, plugin_name):
+    """
+    Validate no service has duplicate volume mounts to same target.
+    Fails with detailed error if conflicts detected.
+    """
+    for service_name, service_config in services_dict.items():
+        if type(service_config) != 'dict':
+            continue
+
+        volumes = service_config.get('volumes', [])
+        if not volumes:
+            continue
+
+        # Map target -> list of sources
+        target_to_sources = {}
+
+        for volume_spec in volumes:
+            parsed = _parse_volume_mount(str(volume_spec))
+            target = parsed['target']
+            source = parsed['source'] if parsed['source'] else '(container-only)'
+
+            if not target:
+                continue
+
+            if target not in target_to_sources:
+                target_to_sources[target] = []
+
+            target_to_sources[target].append({
+                'source': source,
+                'full_spec': str(volume_spec),
+            })
+
+        # Check for conflicts
+        for target, sources in target_to_sources.items():
+            if len(sources) > 1:
+                unique_sources = {}
+                for s in sources:
+                    unique_sources[s['source']] = s['full_spec']
+
+                if len(unique_sources) > 1:
+                    error_lines = [
+                        "",
+                        "=" * 70,
+                        "ERROR: Duplicate volume mount detected",
+                        "=" * 70,
+                        "",
+                        "Service: " + service_name,
+                        "Target path: " + target,
+                        "",
+                        "Conflicting sources:",
+                    ]
+
+                    for idx, (src, spec) in enumerate(unique_sources.items(), 1):
+                        error_lines.append("  " + str(idx) + ". " + src)
+                        error_lines.append("     Full spec: " + spec)
+
+                    error_lines.extend([
+                        "",
+                        "This indicates multiple plugins are trying to mount different",
+                        "sources to the same container path. Docker Compose behavior is",
+                        "undefined in this case.",
+                        "",
+                        "Common causes:",
+                        "  - Plugin registered in multiple places (orchestrator + self-registration)",
+                        "  - Two plugins both registering the same plugin ID",
+                        "  - Copy-paste error in Tiltfile",
+                        "",
+                        "Resolution:",
+                        "  - Ensure each plugin only registers itself once",
+                        "  - Use cc_import to load plugins, not manual registration",
+                        "  - Check for grafana.register_plugin() calls in multiple Tiltfiles",
+                        "",
+                        "Plugin being validated: " + plugin_name,
+                        "=" * 70,
+                    ])
+
+                    fail("\n".join(error_lines))
+
 def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names):
     """
     Apply wire_when rules to a compose file.
@@ -1524,6 +1623,10 @@ def cc_generate_master_compose(
         # Apply wire_when rules
         content = _apply_wire_when_rules(content, dep['name'], wire_when_rules, loaded_dep_names)
 
+        # Validate for duplicate volume mounts
+        if 'services' in content:
+            _validate_volume_mounts(content['services'], dep['name'])
+
         entry = {
             'dep': dep,
             'compose_path': compose_path,
@@ -1619,4 +1722,6 @@ def cc_test_exports():
         'parse_url_with_ref': _parse_url_with_ref,
         'get_compose_path_from_dep': _get_compose_path_from_dep,
         'is_named_volume': _is_named_volume,
+        'parse_volume_mount': _parse_volume_mount,
+        'validate_volume_mounts': _validate_volume_mounts,
     }
