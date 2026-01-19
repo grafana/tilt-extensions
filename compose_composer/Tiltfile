@@ -105,6 +105,12 @@ def cc_docker_compose(master_compose, **kwargs):
     Note: This sets the environment variable in the Tilt process context using
     os.putenv(), which docker-compose will inherit when invoked.
 
+    Environment Variables:
+        CC_SKIP_DOCKER_COMPOSE: When set to any non-empty value, skips calling
+                                docker_compose() and dc_resource(). Useful for testing
+                                compose_composer output in staging directory without
+                                actually starting containers.
+
     Args:
         master_compose: The master compose dict from cc_generate_master_compose().
                         Expected to have 'include' key for compose files and
@@ -117,6 +123,9 @@ def cc_docker_compose(master_compose, **kwargs):
 
         # Legacy pattern (skips auto-registration with warning):
         # cc_docker_compose(encode_yaml(master))
+
+        # Dry run mode (test without starting containers):
+        # CC_SKIP_DOCKER_COMPOSE=1 tilt up
     """
     active = cc_get_active_profiles()
 
@@ -145,6 +154,20 @@ def cc_docker_compose(master_compose, **kwargs):
     else:
         # Already encoded string - can't extract labels, skip auto-registration
         print("[compose_composer] Warning: master_compose is already encoded, skipping auto-registration")
+
+    # Check if we should skip docker_compose (dry run mode)
+    skip_docker_compose = os.getenv('CC_SKIP_DOCKER_COMPOSE', '')
+
+    if skip_docker_compose:
+        print("[compose_composer] CC_SKIP_DOCKER_COMPOSE is set - skipping docker_compose() and dc_resource()")
+        print("[compose_composer] Master compose content:")
+        print(compose_to_load)
+        print("[compose_composer] Check staging directory for generated compose files")
+        if service_to_labels:
+            print("[compose_composer] Would have registered " + str(len(service_to_labels)) + " services:")
+            for service_name, labels in service_to_labels.items():
+                print("  - " + service_name + " (labels: " + str(labels) + ")")
+        return
 
     # Call docker_compose to load the configuration
     docker_compose(compose_to_load, **kwargs)

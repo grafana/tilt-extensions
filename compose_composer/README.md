@@ -755,6 +755,49 @@ if 'debug' in profiles:
     print("Debug mode enabled")
 ```
 
+## Environment Variables
+
+Compose Composer recognizes these environment variables:
+
+### `CC_PROFILES`
+
+Comma-separated list of profiles to activate (see Profiles section above).
+
+```bash
+CC_PROFILES=dev,debug tilt up
+```
+
+### `CC_SKIP_DOCKER_COMPOSE`
+
+When set to any non-empty value, skips calling `docker_compose()` and `dc_resource()`. This is useful for testing compose_composer output without actually starting containers.
+
+**What happens:**
+- Compose Composer runs normally (dependency loading, wiring, staging)
+- All compose files are generated and written to staging directory
+- Master compose content is printed to console
+- Services that would be registered are listed
+- No containers are started
+
+**Usage:**
+```bash
+# Dry run mode - inspect output without starting containers
+CC_SKIP_DOCKER_COMPOSE=1 tilt up
+
+# Combine with profiles to test specific configurations
+CC_SKIP_DOCKER_COMPOSE=1 CC_PROFILES=dev,staging tilt up
+
+# Inspect generated files
+ls -la .compose-stage/
+cat .compose-stage/*.yaml
+```
+
+**Use cases:**
+- Verify plugin registration with different profiles
+- Debug volume mounts and service configurations
+- Test compose_composer changes without starting the full stack
+- Inspect generated provisioning files
+- Validate wire-when rules and modifications
+
 ## Tilt Sidebar Grouping with Labels
 
 Labels organize services in the Tilt UI sidebar into collapsible groups, making it easier to navigate environments with many services.
