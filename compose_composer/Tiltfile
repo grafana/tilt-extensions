@@ -733,6 +733,12 @@ def _should_concatenate_string(key, base_val, override_val):
     if key in _CONCAT_ENV_VARS:
         return True
 
+    # Exclude URLs from concatenation - they should be replaced, not concatenated
+    # Check for the :// pattern which is common to most URL schemes
+    # (http://, https://, file://, ftp://, jdbc://, etc.)
+    if '://' in base_val or '://' in override_val:
+        return False
+
     # Heuristic: both contain colon-separated values (like "name:namespace")
     # This catches similar patterns even if not explicitly listed
     if ':' in base_val and ':' in override_val:

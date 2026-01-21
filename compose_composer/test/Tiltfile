@@ -1360,6 +1360,277 @@ def test_path_traversal_is_allowed():
     print("  [PASS] test_path_traversal_is_allowed")
 
 # ============================================================================
+# Environment Variable Concatenation Tests
+# Tests for _should_concatenate_string() and URL handling
+# ============================================================================
+
+def test_concatenation_url_http_should_not_concatenate():
+    """Test that http:// URLs are not concatenated."""
+    base = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_SERVER_ROOT_URL': 'http://localhost:${GRAFANA_PORT:-3000}',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_SERVER_ROOT_URL': 'http://localhost:3000',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    # Should replace, not concatenate
+    assert_equals(result['services']['grafana']['environment']['GF_SERVER_ROOT_URL'], 'http://localhost:3000',
+                  "http:// URLs should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_url_http_should_not_concatenate")
+
+def test_concatenation_url_https_should_not_concatenate():
+    """Test that https:// URLs are not concatenated."""
+    base = {
+        'services': {
+            'api': {
+                'environment': {
+                    'API_URL': 'https://api.example.com:8080/v1',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'api': {
+                'environment': {
+                    'API_URL': 'https://api.prod.example.com:443/v1',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['api']['environment']['API_URL'], 'https://api.prod.example.com:443/v1',
+                  "https:// URLs should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_url_https_should_not_concatenate")
+
+def test_concatenation_url_jdbc_should_not_concatenate():
+    """Test that jdbc: URLs are not concatenated."""
+    base = {
+        'services': {
+            'db': {
+                'environment': {
+                    'DB_URL': 'jdbc:mysql://localhost:3306/mydb',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'db': {
+                'environment': {
+                    'DB_URL': 'jdbc:postgresql://postgres:5432/mydb',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['db']['environment']['DB_URL'], 'jdbc:postgresql://postgres:5432/mydb',
+                  "jdbc: URLs should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_url_jdbc_should_not_concatenate")
+
+def test_concatenation_url_file_should_not_concatenate():
+    """Test that file:// URLs are not concatenated."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'CONFIG_PATH': 'file:///etc/config/base.yaml',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'CONFIG_PATH': 'file:///etc/config/override.yaml',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['environment']['CONFIG_PATH'], 'file:///etc/config/override.yaml',
+                  "file:// URLs should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_url_file_should_not_concatenate")
+
+def test_concatenation_url_ftp_should_not_concatenate():
+    """Test that ftp:// and ftps:// URLs are not concatenated."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'FTP_URL': 'ftp://ftp.example.com:21/uploads',
+                    'FTPS_URL': 'ftps://secure.example.com:990/data',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'FTP_URL': 'ftp://internal.example.com:2121/uploads',
+                    'FTPS_URL': 'ftps://vault.example.com:990/data',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['environment']['FTP_URL'], 'ftp://internal.example.com:2121/uploads',
+                  "ftp:// URLs should be replaced, not concatenated")
+    assert_equals(result['services']['app']['environment']['FTPS_URL'], 'ftps://vault.example.com:990/data',
+                  "ftps:// URLs should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_url_ftp_should_not_concatenate")
+
+def test_concatenation_webhook_operators_should_concatenate():
+    """Test that WEBHOOK_OPERATORS should still concatenate correctly."""
+    base = {
+        'services': {
+            'operator': {
+                'environment': {
+                    'WEBHOOK_OPERATORS': 'op1:ns1,op2:ns2',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'operator': {
+                'environment': {
+                    'WEBHOOK_OPERATORS': 'op3:ns3',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    # Should concatenate because it's in _CONCAT_ENV_VARS list
+    webhook_val = result['services']['operator']['environment']['WEBHOOK_OPERATORS']
+    assert_in('op1:ns1', webhook_val, "Base operators should be present")
+    assert_in('op3:ns3', webhook_val, "Override operators should be added")
+    print("  [PASS] test_concatenation_webhook_operators_should_concatenate")
+
+def test_concatenation_feature_toggles_should_concatenate():
+    """Test that GF_FEATURE_TOGGLES_ENABLE should concatenate correctly."""
+    base = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_FEATURE_TOGGLES_ENABLE': 'feature1,feature2',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_FEATURE_TOGGLES_ENABLE': 'feature3',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    # Should concatenate because it's in _CONCAT_ENV_VARS list
+    features = result['services']['grafana']['environment']['GF_FEATURE_TOGGLES_ENABLE']
+    assert_in('feature1', features, "Base features should be present")
+    assert_in('feature3', features, "Override features should be added")
+    print("  [PASS] test_concatenation_feature_toggles_should_concatenate")
+
+def test_concatenation_colon_non_url_should_concatenate():
+    """Test that non-URL strings with colons should concatenate (heuristic fallback)."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'CUSTOM_NAMESPACES': 'service1:default,service2:kube-system',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'CUSTOM_NAMESPACES': 'service3:production',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    # Should concatenate because both have colons and neither starts with URL scheme
+    namespaces = result['services']['app']['environment']['CUSTOM_NAMESPACES']
+    assert_in('service1:default', namespaces, "Base namespaces should be present")
+    assert_in('service3:production', namespaces, "Override namespaces should be added")
+    print("  [PASS] test_concatenation_colon_non_url_should_concatenate")
+
+def test_concatenation_simple_strings_should_replace():
+    """Test that simple strings without colons should be replaced."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'APP_NAME': 'my-app',
+                    'VERSION': '1.0.0',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'APP_NAME': 'my-app-override',
+                    'VERSION': '2.0.0',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['environment']['APP_NAME'], 'my-app-override',
+                  "Simple strings should be replaced")
+    assert_equals(result['services']['app']['environment']['VERSION'], '2.0.0',
+                  "Simple strings should be replaced")
+    print("  [PASS] test_concatenation_simple_strings_should_replace")
+
+def test_concatenation_mixed_url_and_plain_should_not_concatenate():
+    """Test that mixing URL and plain string should not concatenate (URL exclusion takes precedence)."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'ENDPOINT': 'https://api.example.com',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'ENDPOINT': 'plain-value-with:colon',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    # Should replace because base is a URL
+    assert_equals(result['services']['app']['environment']['ENDPOINT'], 'plain-value-with:colon',
+                  "URL in base should prevent concatenation")
+    print("  [PASS] test_concatenation_mixed_url_and_plain_should_not_concatenate")
+
+# ============================================================================
 # Phase 2: Dictionary Key Validation Tests (Bug #2 - Fixed)
 # These tests verify the fix handles missing keys gracefully
 # ============================================================================
@@ -1416,6 +1687,18 @@ def run_tests():
     test_deep_merge_lists_dedup()
     test_deep_merge_does_not_mutate()
     test_deep_merge_compose_overrides()
+
+    print("\n=== Environment Variable Concatenation Tests ===")
+    test_concatenation_url_http_should_not_concatenate()
+    test_concatenation_url_https_should_not_concatenate()
+    test_concatenation_url_jdbc_should_not_concatenate()
+    test_concatenation_url_file_should_not_concatenate()
+    test_concatenation_url_ftp_should_not_concatenate()
+    test_concatenation_webhook_operators_should_concatenate()
+    test_concatenation_feature_toggles_should_concatenate()
+    test_concatenation_colon_non_url_should_concatenate()
+    test_concatenation_simple_strings_should_replace()
+    test_concatenation_mixed_url_and_plain_should_not_concatenate()
     
     print("\n=== cc_local_composable Tests ===")
     test_cc_create_basic()
