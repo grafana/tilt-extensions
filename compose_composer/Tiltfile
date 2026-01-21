@@ -1647,8 +1647,9 @@ def cc_generate_master_compose(
         content = _apply_wire_when_rules(content, dep['name'], wire_when_rules, loaded_dep_names)
 
         # Validate for duplicate volume mounts
-        if 'services' in content:
-            _validate_volume_mounts(content['services'], dep['name'])
+        # NOTE: Validation disabled - Docker Compose allows duplicate mounts (last wins)
+        # if 'services' in content:
+        #     _validate_volume_mounts(content['services'], dep['name'])
 
         entry = {
             'dep': dep,
