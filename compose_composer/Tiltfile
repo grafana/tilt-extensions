@@ -91,41 +91,106 @@ def cc_get_active_profiles():
     """
     return _active_profiles
 
+def _run_plugin_setup(dependencies, staging_dir, orchestrator_dir):
+    """
+    Run cc_setup() for all plugins in dependency order.
+
+    Called automatically by cc_docker_compose() before starting containers.
+    Plugins can export cc_setup(ctx) to run host-side setup commands like
+    local_resource() for build tasks.
+
+    Args:
+        dependencies: Flattened list of dependency dicts from cc_generate_master_compose()
+        staging_dir: Path to .cc/ staging directory
+        orchestrator_dir: Directory of the orchestrating Tiltfile
+    """
+    skip_setup = os.getenv('CC_SKIP_SETUP', '')
+    if skip_setup:
+        print("[compose_composer] CC_SKIP_SETUP is set - skipping cc_setup() calls")
+        return
+
+    active = cc_get_active_profiles()
+    setup_count = 0
+
+    print("\n[compose_composer] Running plugin setup:")
+
+    for dep in dependencies:
+        dep_name = dep.get('name', '<unknown>')
+        symbols = dep.get('symbols', {})
+        setup_fn = symbols.get('cc_setup')
+
+        if not setup_fn:
+            continue
+
+        # Build context struct for this plugin
+        plugin_dir = os.path.dirname(dep.get('compose_path', ''))
+        ctx = struct(
+            staging_dir=staging_dir,
+            active_profiles=active,
+            orchestrator_dir=orchestrator_dir,
+            plugin_dir=plugin_dir,
+        )
+
+        print("  Running cc_setup() for: " + dep_name)
+        setup_fn(ctx)
+        setup_count += 1
+
+    if setup_count == 0:
+        print("  (no plugins export cc_setup)")
+    else:
+        print("  Completed setup for " + str(setup_count) + " plugin(s)")
+
 def cc_docker_compose(master_compose, **kwargs):
     """
     Invoke docker_compose() with active profiles automatically set via environment,
-    and automatically register all services with dc_resource() using their labels.
+    run cc_setup() for all plugins, and auto-register services with dc_resource().
 
     This is a convenience wrapper that:
     1. Sets COMPOSE_PROFILES environment variable based on cc_get_active_profiles()
-    2. Extracts service-to-labels mapping from master_compose dict
-    3. Calls docker_compose() to load the compose configuration
-    4. Automatically registers all services with dc_resource() using their labels
+    2. Calls cc_setup(ctx) for all plugins that export it (in dependency order)
+    3. Extracts service-to-labels mapping from master_compose dict
+    4. Calls docker_compose() to load the compose configuration
+    5. Automatically registers all services with dc_resource() using their labels
+
+    Plugin Setup (cc_setup):
+        Plugins can export a cc_setup(ctx) function that will be called automatically
+        before docker_compose(). This enables host-side setup like local_resource()
+        for build tasks. The ctx argument is a struct with:
+        - staging_dir: Path to .cc/ staging directory
+        - active_profiles: List of active profile names
+        - orchestrator_dir: Directory of the orchestrating Tiltfile
+        - plugin_dir: The plugin's directory (convenience)
 
     Note: This sets the environment variable in the Tilt process context using
     os.putenv(), which docker-compose will inherit when invoked.
 
     Environment Variables:
-        CC_SKIP_DOCKER_COMPOSE: When set to any non-empty value, skips calling
+        CC_DRY_RUN: When set to any non-empty value, skips calling
                                 docker_compose() and dc_resource(). Useful for testing
                                 compose_composer output in staging directory without
                                 actually starting containers.
+        CC_SKIP_SETUP: When set to any non-empty value, skips calling cc_setup()
+                       for all plugins. Useful for debugging or when setup is not needed.
 
     Args:
         master_compose: The master compose dict from cc_generate_master_compose().
-                        Expected to have 'include' key for compose files and
-                        '_service_to_labels' key for label mapping.
+                        Expected to have 'include' key for compose files,
+                        '_service_to_labels' for label mapping, '_dependencies' for
+                        plugin setup, and '_staging_dir' for context.
         **kwargs: Additional arguments passed to docker_compose()
 
     Example:
         master = cc_generate_master_compose(cc_export(), cli_plugins)
-        cc_docker_compose(master)  # Pass dict directly for auto-registration
+        cc_docker_compose(master)  # Runs cc_setup() then docker_compose()
 
         # Legacy pattern (skips auto-registration with warning):
         # cc_docker_compose(encode_yaml(master))
 
         # Dry run mode (test without starting containers):
-        # CC_SKIP_DOCKER_COMPOSE=1 tilt up
+        # CC_DRY_RUN=1 tilt up
+
+        # Skip plugin setup:
+        # CC_SKIP_SETUP=1 tilt up
     """
     active = cc_get_active_profiles()
 
@@ -136,6 +201,23 @@ def cc_docker_compose(master_compose, **kwargs):
         profiles_str = ','.join(active)
         os.putenv('COMPOSE_PROFILES', profiles_str)
         print("[compose_composer] Setting COMPOSE_PROFILES=" + profiles_str)
+
+    # Run plugin setup before starting containers
+    # Extract dependencies and staging_dir from master_compose (if dict)
+    if type(master_compose) == 'dict':
+        dependencies = master_compose.get('_dependencies', [])
+        staging_dir = master_compose.get('_staging_dir', os.path.abspath('.cc'))
+
+        # Determine orchestrator_dir from first local plugin or staging parent
+        orchestrator_dir = os.path.dirname(staging_dir)
+        for dep in dependencies:
+            if dep.get('_is_local') and not dep.get('_from_cli'):
+                compose_path = dep.get('compose_path', '')
+                if compose_path:
+                    orchestrator_dir = os.path.dirname(compose_path)
+                break
+
+        _run_plugin_setup(dependencies, staging_dir, orchestrator_dir)
 
     # Extract service-to-labels mapping before encoding
     # master_compose can be either a dict (before encoding) or a string (after encoding)
@@ -156,10 +238,10 @@ def cc_docker_compose(master_compose, **kwargs):
         print("[compose_composer] Warning: master_compose is already encoded, skipping auto-registration")
 
     # Check if we should skip docker_compose (dry run mode)
-    skip_docker_compose = os.getenv('CC_SKIP_DOCKER_COMPOSE', '')
+    skip_docker_compose = os.getenv('CC_DRY_RUN', '')
 
     if skip_docker_compose:
-        print("[compose_composer] CC_SKIP_DOCKER_COMPOSE is set - skipping docker_compose() and dc_resource()")
+        print("[compose_composer] CC_DRY_RUN is set - skipping docker_compose() and dc_resource()")
         print("[compose_composer] Master compose content:")
         print(compose_to_load)
         print("[compose_composer] Check staging directory for generated compose files")
@@ -1718,12 +1800,19 @@ def cc_generate_master_compose(
     master = {
         'include': includes,
         '_service_to_labels': service_to_labels,
+        '_dependencies': dependencies,  # For cc_setup() in cc_docker_compose()
+        '_staging_dir': staging_dir,    # For cc_setup() context
     }
 
     # Write master compose file to staging directory for inspection/debugging
+    # Note: Only write YAML-encodable fields (exclude _dependencies which has functions)
     master_compose_path = staging_dir + '/master-compose.yaml'
     local('mkdir -p "' + staging_dir + '"', quiet=True)
-    yaml_content = encode_yaml(master)
+    yaml_serializable = {
+        'include': includes,
+        '_service_to_labels': service_to_labels,
+    }
+    yaml_content = encode_yaml(yaml_serializable)
     local('cat > "' + master_compose_path + '"', stdin=yaml_content, quiet=True)
     print("\nMaster compose written to: " + master_compose_path)
 
@@ -1754,4 +1843,5 @@ def cc_test_exports():
         'is_named_volume': _is_named_volume,
         'parse_volume_mount': _parse_volume_mount,
         'validate_volume_mounts': _validate_volume_mounts,
+        'run_plugin_setup': _run_plugin_setup,
     }

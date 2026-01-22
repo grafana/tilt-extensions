@@ -20,6 +20,7 @@ is_dep_included_by_profile = _internals['is_dep_included_by_profile']
 parse_url_with_ref = _internals['parse_url_with_ref']
 get_compose_path_from_dep = _internals['get_compose_path_from_dep']
 is_named_volume = _internals['is_named_volume']
+run_plugin_setup = _internals['run_plugin_setup']
 
 # ============================================================================
 # Test Helpers
@@ -1676,6 +1677,119 @@ def test_flatten_dependency_tree_valid_dict_dep():
     print("  [PASS] test_flatten_dependency_tree_valid_dict_dep")
 
 # ============================================================================
+# run_plugin_setup Tests
+# ============================================================================
+
+def test_run_plugin_setup_calls_cc_setup():
+    """Test that run_plugin_setup calls cc_setup for plugins that export it."""
+    # Use list to track calls (mutating list is allowed in closures)
+    setup_calls = []
+
+    def mock_cc_setup(ctx):
+        setup_calls.append({'name': 'mock-plugin', 'ctx': ctx})
+
+    dependencies = [
+        {
+            'name': 'mock-plugin',
+            'compose_path': '/path/to/compose.yaml',
+            'symbols': {'cc_setup': mock_cc_setup},
+        },
+    ]
+
+    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+
+    assert_equals(len(setup_calls), 1, "cc_setup should be called once")
+    assert_equals(setup_calls[0]['name'], 'mock-plugin', "Should call correct plugin")
+    print("  [PASS] test_run_plugin_setup_calls_cc_setup")
+
+def test_run_plugin_setup_dependency_order():
+    """Test that cc_setup is called in dependency order (as listed)."""
+    setup_calls = []
+
+    def make_setup_fn(name, calls):
+        def fn(ctx):
+            calls.append(name)
+        return fn
+
+    dependencies = [
+        {
+            'name': 'dep1',
+            'compose_path': '/path/dep1.yaml',
+            'symbols': {'cc_setup': make_setup_fn('dep1', setup_calls)},
+        },
+        {
+            'name': 'dep2',
+            'compose_path': '/path/dep2.yaml',
+            'symbols': {'cc_setup': make_setup_fn('dep2', setup_calls)},
+        },
+        {
+            'name': 'dep3',
+            'compose_path': '/path/dep3.yaml',
+            'symbols': {'cc_setup': make_setup_fn('dep3', setup_calls)},
+        },
+    ]
+
+    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+
+    assert_equals(len(setup_calls), 3, "All cc_setup functions should be called")
+    assert_equals(setup_calls[0], 'dep1', "dep1 should be first")
+    assert_equals(setup_calls[1], 'dep2', "dep2 should be second")
+    assert_equals(setup_calls[2], 'dep3', "dep3 should be third")
+    print("  [PASS] test_run_plugin_setup_dependency_order")
+
+def test_run_plugin_setup_context_values():
+    """Test that context struct contains correct values."""
+    received_ctx = [None]
+
+    def capture_ctx(ctx):
+        received_ctx[0] = ctx
+
+    dependencies = [
+        {
+            'name': 'test-plugin',
+            'compose_path': '/path/to/plugin/compose.yaml',
+            'symbols': {'cc_setup': capture_ctx},
+        },
+    ]
+
+    run_plugin_setup(dependencies, '/tmp/test-staging', '/tmp/test-orchestrator')
+
+    ctx = received_ctx[0]
+    assert_true(ctx != None, "Context should be captured")
+    assert_equals(ctx.staging_dir, '/tmp/test-staging', "staging_dir should match")
+    assert_equals(ctx.orchestrator_dir, '/tmp/test-orchestrator', "orchestrator_dir should match")
+    assert_equals(ctx.plugin_dir, '/path/to/plugin', "plugin_dir should be dirname of compose_path")
+    assert_true(type(ctx.active_profiles) == 'list', "active_profiles should be a list")
+    print("  [PASS] test_run_plugin_setup_context_values")
+
+def test_run_plugin_setup_no_cc_setup():
+    """Test that plugins without cc_setup are skipped gracefully."""
+    setup_calls = []
+
+    def mock_cc_setup(ctx):
+        setup_calls.append('has-setup')
+
+    dependencies = [
+        {
+            'name': 'no-setup-plugin',
+            'compose_path': '/path/no-setup.yaml',
+            'symbols': {},  # No cc_setup
+        },
+        {
+            'name': 'has-setup-plugin',
+            'compose_path': '/path/has-setup.yaml',
+            'symbols': {'cc_setup': mock_cc_setup},
+        },
+    ]
+
+    # Should not fail, just skip plugins without cc_setup
+    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+
+    assert_equals(len(setup_calls), 1, "Only plugin with cc_setup should be called")
+    assert_equals(setup_calls[0], 'has-setup', "Should call the correct plugin")
+    print("  [PASS] test_run_plugin_setup_no_cc_setup")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -1817,6 +1931,12 @@ def run_tests():
     test_collect_wire_when_rules_with_valid_dict()
     test_deep_copy_documentation()
     test_path_traversal_is_allowed()
+
+    print("\n=== run_plugin_setup Tests ===")
+    test_run_plugin_setup_calls_cc_setup()
+    test_run_plugin_setup_dependency_order()
+    test_run_plugin_setup_context_values()
+    test_run_plugin_setup_no_cc_setup()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
