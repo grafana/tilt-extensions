@@ -333,6 +333,11 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
 
                       These modifications are applied in ALL modes (orchestrator
                       and CLI plugin), enabling true symmetric orchestration.
+        symbols: Dict of module-level symbols to export (optional)
+                 Example: symbols={'cc_setup': cc_setup}
+                 Enables cc_setup() to be called automatically by cc_docker_compose()
+                 when this plugin is used as orchestrator or CLI plugin.
+                 Supports symmetric orchestration for host-side setup tasks.
 
     Returns:
         struct with:
@@ -374,10 +379,24 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
                     k3s.register_crds(crd_paths=['definitions']),
                 ],
             )
+
+        # With cc_setup for automatic host-side setup
+        def cc_setup(ctx):
+            local_resource('build', 'make build', labels=['Build'])
+
+        def cc_export():
+            return cc_create(
+                'my-plugin',
+                os.path.dirname(__file__) + '/docker-compose.yaml',
+                k3s, mysql,
+                labels=['app'],
+                symbols={'cc_setup': cc_setup},
+            )
     """
     profiles = kwargs.get('profiles', [])
     labels = kwargs.get('labels', [])
     modifications = kwargs.get('modifications', [])
+    symbols = kwargs.get('symbols', {})
 
     # Validate modifications is a list
     if type(modifications) != 'list':
@@ -391,7 +410,7 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
         labels=labels,
         modifications=modifications,
         _compose_overrides_param={},
-        _symbols={},
+        _symbols=symbols,
         _is_local=True,
         _from_cli=False,
         # Bind universal compose_overrides() method
@@ -1303,7 +1322,7 @@ def _struct_to_dict(dep_struct):
     if getattr(dep_struct, '_is_local', False):
         result['compose_path'] = dep_struct.compose_path
         result['dependencies'] = dep_struct.dependencies
-        result['symbols'] = {}
+        result['symbols'] = dep_struct._symbols
     else:
         # Remote dependency
         result['url'] = dep_struct.url

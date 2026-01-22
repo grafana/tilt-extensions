@@ -1789,6 +1789,29 @@ def test_run_plugin_setup_no_cc_setup():
     assert_equals(setup_calls[0], 'has-setup', "Should call the correct plugin")
     print("  [PASS] test_run_plugin_setup_no_cc_setup")
 
+def test_local_plugin_cc_setup_with_symbols():
+    """Test that cc_setup is called for local plugins when symbols are provided."""
+    setup_calls = []
+
+    def mock_setup(ctx):
+        setup_calls.append('local-setup-called')
+
+    # Create a local plugin with symbols (using cc_create pattern)
+    local_plugin = cc_create(
+        'test-local',
+        '/path/to/local/compose.yaml',
+        symbols={'cc_setup': mock_setup},
+    )
+
+    # Flatten dependency tree (simulates what cc_generate_master_compose does)
+    deps = flatten_dependency_tree(local_plugin, [], {}, [])
+
+    # Run setup
+    run_plugin_setup(deps, '/tmp/staging', '/tmp/orchestrator')
+
+    assert_equals(len(setup_calls), 1, "cc_setup should be called for local plugin with symbols")
+    print("  [PASS] test_local_plugin_cc_setup_with_symbols")
+
 # ============================================================================
 # Run All Tests
 # ============================================================================
@@ -1937,6 +1960,7 @@ def run_tests():
     test_run_plugin_setup_dependency_order()
     test_run_plugin_setup_context_values()
     test_run_plugin_setup_no_cc_setup()
+    test_local_plugin_cc_setup_with_symbols()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
