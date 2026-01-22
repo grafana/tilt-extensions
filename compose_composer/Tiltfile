@@ -222,13 +222,15 @@ def cc_docker_compose(master_compose, **kwargs):
     # Extract service-to-labels mapping before encoding
     # master_compose can be either a dict (before encoding) or a string (after encoding)
     service_to_labels = {}
+    service_to_resource_deps = {}
     compose_to_load = master_compose
 
     if type(master_compose) == 'dict':
-        # Extract service-to-labels before encoding
+        # Extract service-to-labels and service-to-resource_deps before encoding
         service_to_labels = master_compose.get('_service_to_labels', {})
+        service_to_resource_deps = master_compose.get('_service_to_resource_deps', {})
 
-        # Create a clean copy without _service_to_labels for docker_compose
+        # Create a clean copy without metadata for docker_compose
         compose_dict = {
             'include': master_compose.get('include', [])
         }
@@ -248,13 +250,17 @@ def cc_docker_compose(master_compose, **kwargs):
         if service_to_labels:
             print("[compose_composer] Would have registered " + str(len(service_to_labels)) + " services:")
             for service_name, labels in service_to_labels.items():
-                print("  - " + service_name + " (labels: " + str(labels) + ")")
+                resource_deps = service_to_resource_deps.get(service_name, [])
+                if resource_deps:
+                    print("  - " + service_name + " (labels: " + str(labels) + ", resource_deps: " + str(resource_deps) + ")")
+                else:
+                    print("  - " + service_name + " (labels: " + str(labels) + ")")
         return
 
     # Call docker_compose to load the configuration
     docker_compose(compose_to_load, **kwargs)
 
-    # Auto-register services with dc_resource() using their labels
+    # Auto-register services with dc_resource() using their labels and resource_deps
     # Note: Docker Compose filters services based on COMPOSE_PROFILES at runtime.
     # Services defined in compose files with profiles may not be loaded if those
     # profiles aren't active. We register all services we know about, but dc_resource()
@@ -263,7 +269,14 @@ def cc_docker_compose(master_compose, **kwargs):
     if service_to_labels:
         print("[compose_composer] Auto-registering " + str(len(service_to_labels)) + " services with dc_resource()")
         for service_name, labels in service_to_labels.items():
-            dc_resource(service_name, labels=labels)
+            # Get resource_deps for this service (default to empty list)
+            resource_deps = service_to_resource_deps.get(service_name, [])
+
+            # Pass both labels and resource_deps to dc_resource
+            if resource_deps:
+                dc_resource(service_name, labels=labels, resource_deps=resource_deps)
+            else:
+                dc_resource(service_name, labels=labels)
 
 def _is_dep_included_by_profile(dep_profiles, active_profiles):
     """
@@ -461,7 +474,7 @@ def _parse_url_with_ref(url):
 
     return (url, None)
 
-def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[]):
+def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[], resource_deps=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
 
@@ -487,6 +500,9 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         labels: List of Tilt labels for grouping services in the UI (optional)
                 If empty, defaults to ['dependencies'] for automatic dc_resource labeling
                 Example: labels=['infra'] groups all dependency services under 'infra'
+        resource_deps: List of Tilt resource names this dependency's services should wait for (optional)
+                       Use this to make imported composable services wait for build tasks or other resources
+                       Example: resource_deps=['frontend-build', 'backend-build']
 
     Returns:
         struct with:
@@ -495,6 +511,7 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
           - dependencies: From extension's cc_export() if available
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
+          - resource_deps: List of Tilt resource names for dependency ordering
           - compose_overrides(): Bound method for specifying overrides (returns modification dict)
           - _symbols: dict of loaded symbols
           - Bound helper functions from imports list
@@ -528,6 +545,14 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         custom = cc_import(
             name='my-component',
             url='file:///path/to/local/composables',
+            labels=['infra'],
+        )
+
+        # With resource dependencies (wait for build tasks to complete)
+        grafana = cc_import(
+            name='grafana',
+            url='https://github.com/grafana/composables@main',
+            resource_deps=['frontend-build', 'backend-build'],
             labels=['infra'],
         )
     """
@@ -603,6 +628,7 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         'dependencies': nested_deps,
         'profiles': profiles,
         'labels': labels,
+        'resource_deps': resource_deps,
         '_symbols': symbols,
         '_from_cli': False,
         '_is_local': False,
@@ -1313,6 +1339,7 @@ def _struct_to_dict(dep_struct):
         '_compose_overrides_param': getattr(dep_struct, '_compose_overrides_param', {}),
         'profiles': getattr(dep_struct, 'profiles', []),
         'labels': getattr(dep_struct, 'labels', []),
+        'resource_deps': getattr(dep_struct, 'resource_deps', []),
         'modifications': getattr(dep_struct, 'modifications', []),
         '_from_cli': dep_struct._from_cli,
         '_is_local': getattr(dep_struct, '_is_local', False),
@@ -1732,6 +1759,7 @@ def cc_generate_master_compose(
     print("\nAssembling compose files:")
     resolved = []
     service_to_labels = {}
+    service_to_resource_deps = {}
 
     for dep in loaded_deps:
         compose_path = _get_compose_path_from_dep(dep)
@@ -1786,6 +1814,9 @@ def cc_generate_master_compose(
         if not dep_labels:
             dep_labels = ['dependencies']  # Default label
 
+        # Build service-to-resource_deps mapping
+        dep_resource_deps = dep.get('resource_deps', [])
+
         services = content.get('services', {})
         for service_name in services:
             service_config = services[service_name]
@@ -1800,6 +1831,10 @@ def cc_generate_master_compose(
             # Services can only belong to one plugin, so we don't merge labels
             if service_name not in service_to_labels:
                 service_to_labels[service_name] = dep_labels
+
+            # Build resource_deps mapping (similar to labels)
+            if service_name not in service_to_resource_deps:
+                service_to_resource_deps[service_name] = dep_resource_deps
     
     # ========================================================================
     # Phase 4: Generate include list
@@ -1819,6 +1854,7 @@ def cc_generate_master_compose(
     master = {
         'include': includes,
         '_service_to_labels': service_to_labels,
+        '_service_to_resource_deps': service_to_resource_deps,
         '_dependencies': dependencies,  # For cc_setup() in cc_docker_compose()
         '_staging_dir': staging_dir,    # For cc_setup() context
     }

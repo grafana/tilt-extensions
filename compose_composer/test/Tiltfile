@@ -745,6 +745,89 @@ def test_cc_create_labels_default_empty():
     print("  [PASS] test_cc_create_labels_default_empty")
 
 # ============================================================================
+# resource_deps Tests
+# ============================================================================
+
+def test_struct_with_resource_deps():
+    """Test creating a struct with resource_deps."""
+    # Create a mock dependency struct with resource_deps
+    dep = struct(
+        name='test-dep',
+        url='file:///path',
+        ref=None,
+        repo_path='test-dep',
+        compose_path='/path/compose.yaml',
+        _compose_overrides_param={},
+        dependencies=[],
+        profiles=[],
+        labels=['infra'],
+        resource_deps=['frontend-build', 'backend-build'],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+        modifications=[],
+    )
+    assert_equals(len(dep.resource_deps), 2)
+    assert_in('frontend-build', dep.resource_deps)
+    assert_in('backend-build', dep.resource_deps)
+    print("  [PASS] test_struct_with_resource_deps")
+
+def test_struct_to_dict_preserves_resource_deps():
+    """Test that struct_to_dict preserves resource_deps field."""
+    dep = struct(
+        name='test-dep',
+        url='file:///path',
+        ref=None,
+        repo_path='test-dep',
+        compose_path='/path/compose.yaml',
+        _compose_overrides_param={},
+        dependencies=[],
+        profiles=[],
+        labels=[],
+        resource_deps=['build-task'],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+        modifications=[],
+    )
+    dep_dict = struct_to_dict(dep)
+    assert_equals(len(dep_dict['resource_deps']), 1)
+    assert_in('build-task', dep_dict['resource_deps'])
+    print("  [PASS] test_struct_to_dict_preserves_resource_deps")
+
+def test_struct_to_dict_resource_deps_default_empty():
+    """Test that resource_deps defaults to empty list when not specified."""
+    dep = struct(
+        name='test-dep',
+        url='file:///path',
+        ref=None,
+        repo_path='test-dep',
+        compose_path='/path/compose.yaml',
+        _compose_overrides_param={},
+        dependencies=[],
+        profiles=[],
+        labels=[],
+        _symbols={},
+        _from_cli=False,
+        _is_local=False,
+        modifications=[],
+    )
+    dep_dict = struct_to_dict(dep)
+    assert_equals(dep_dict['resource_deps'], [])
+    print("  [PASS] test_struct_to_dict_resource_deps_default_empty")
+
+def test_cc_create_resource_deps_default_empty():
+    """Test that cc_create defaults resource_deps to empty list."""
+    plugin = cc_create(
+        'my-plugin',
+        '/path/to/compose.yaml',
+    )
+    # cc_create doesn't support resource_deps parameter, so it won't have the field
+    # This is expected since we only added resource_deps to cc_import
+    assert_true(not hasattr(plugin, 'resource_deps'), "cc_create should not have resource_deps field")
+    print("  [PASS] test_cc_create_resource_deps_default_empty")
+
+# ============================================================================
 # Modifications Tests
 # ============================================================================
 
@@ -1895,6 +1978,12 @@ def run_tests():
     print("\n=== Label Tests ===")
     test_cc_create_with_labels()
     test_cc_create_labels_default_empty()
+
+    print("\n=== resource_deps Tests ===")
+    test_struct_with_resource_deps()
+    test_struct_to_dict_preserves_resource_deps()
+    test_struct_to_dict_resource_deps_default_empty()
+    test_cc_create_resource_deps_default_empty()
 
     print("\n=== Modifications Tests ===")
     test_cc_create_with_modifications()
