@@ -1245,7 +1245,18 @@ def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_n
 
                         existing = env_dict
                     for k, v in service_mods['environment'].items():
-                        existing[k] = v
+                        # Check if this env var should be concatenated (like GF_FEATURE_TOGGLES_ENABLE)
+                        if k in existing and _should_concatenate_string(k, str(existing[k]), str(v)):
+                            # Concatenate comma-separated values, avoiding duplicates
+                            base_items = str(existing[k]).split(',')
+                            override_items = str(v).split(',')
+                            combined = list(base_items)
+                            for item in override_items:
+                                if item and item not in combined:
+                                    combined.append(item)
+                            existing[k] = ','.join(combined)
+                        else:
+                            existing[k] = v
                     svc['environment'] = existing
                     modified = True
                 
