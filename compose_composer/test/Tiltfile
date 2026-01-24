@@ -353,12 +353,38 @@ def test_is_url_not_url():
 # ============================================================================
 
 def test_resolve_plugin_spec_url():
-    """Test URL passthrough."""
+    """Test URL passthrough - standalone composable (no fragment)."""
     result = resolve_plugin_spec('https://github.com/org/repo.git', '/base')
     assert_equals(result['url'], 'https://github.com/org/repo.git')
     assert_equals(result['name'], 'repo')
+    assert_equals(result['repo_path'], '.', "Standalone URL should have repo_path='.'")
     assert_true(result['_from_cli'])
     print("  [PASS] test_resolve_plugin_spec_url")
+
+def test_resolve_plugin_spec_url_with_fragment():
+    """Test URL with fragment specifying subdirectory (collection URL)."""
+    result = resolve_plugin_spec('https://github.com/org/composables#grafana', '/base')
+    assert_equals(result['url'], 'https://github.com/org/composables')
+    assert_equals(result['name'], 'grafana')
+    assert_equals(result['repo_path'], 'grafana', "Fragment should become repo_path")
+    assert_true(result['_from_cli'])
+    print("  [PASS] test_resolve_plugin_spec_url_with_fragment")
+
+def test_resolve_plugin_spec_url_with_ref_and_fragment():
+    """Test URL with both @ref and #fragment."""
+    result = resolve_plugin_spec('https://github.com/org/composables@v1.0#grafana', '/base')
+    assert_equals(result['url'], 'https://github.com/org/composables@v1.0', "URL should keep @ref")
+    assert_equals(result['name'], 'grafana')
+    assert_equals(result['repo_path'], 'grafana')
+    print("  [PASS] test_resolve_plugin_spec_url_with_ref_and_fragment")
+
+def test_resolve_plugin_spec_url_with_nested_fragment():
+    """Test URL with nested path in fragment."""
+    result = resolve_plugin_spec('https://github.com/org/repo#path/to/plugin', '/base')
+    assert_equals(result['url'], 'https://github.com/org/repo')
+    assert_equals(result['name'], 'plugin', "Name should be last segment of fragment")
+    assert_equals(result['repo_path'], 'path/to/plugin', "repo_path should be full fragment")
+    print("  [PASS] test_resolve_plugin_spec_url_with_nested_fragment")
 
 def test_resolve_plugin_spec_absolute():
     """Test absolute path conversion to file:// URL."""
@@ -1938,6 +1964,9 @@ def run_tests():
     
     print("\n=== resolve_plugin_spec Tests ===")
     test_resolve_plugin_spec_url()
+    test_resolve_plugin_spec_url_with_fragment()
+    test_resolve_plugin_spec_url_with_ref_and_fragment()
+    test_resolve_plugin_spec_url_with_nested_fragment()
     test_resolve_plugin_spec_absolute()
     test_resolve_plugin_spec_relative()
     test_resolve_plugin_spec_adjacent()

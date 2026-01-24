@@ -700,33 +700,46 @@ def _is_url(s):
 def _resolve_plugin_spec(plugin, tiltfile_dir):
     """
     Resolve a plugin specifier to a dependency dict with url.
-    - URLs pass through as https
-    - Absolute paths become file:// URLs
+
+    - Git/HTTPS URLs: Treated as standalone composables (repo_path='.')
+      Use #fragment to specify subdirectory: repo#grafana -> repo_path='grafana'
+    - Absolute paths become file:// URLs with repo_path='.'
     - Relative paths resolve from tiltfile_dir and become file:// URLs
     - Plain names are treated as adjacent directories
+
+    Examples:
+        'https://github.com/org/repo' -> standalone, repo_path='.'
+        'https://github.com/org/composables#grafana' -> repo_path='grafana'
+        'https://github.com/org/repo@v1.0#path/to/plugin' -> repo_path='path/to/plugin'
     """
     # Git/HTTPS URLs
     if _is_url(plugin):
-        # Extract name from URL (last segment, minus extensions)
-        # Starlark: String manipulation with split, rstrip, replace
+        # Check for fragment specifying subdirectory (collection URL)
+        # Format: https://github.com/org/composables#grafana -> repo_path='grafana'
+        if '#' in plugin:
+            url_part, fragment = plugin.rsplit('#', 1)
+            if fragment:
+                # Fragment specifies repo_path (subdirectory containing Tiltfile)
+                repo_path = fragment
+                # Handle nested paths like 'a/b/grafana' - name is last segment
+                name = fragment.split('/')[-1]
+                return {'name': name, 'url': url_part, 'repo_path': repo_path, '_from_cli': True}
+
+        # No fragment = standalone composable (Tiltfile at repo root)
+        # Extract name from last URL path segment
         url_without_scheme = plugin.split('://')[-1] if '://' in plugin else plugin
         url_without_scheme = url_without_scheme.rstrip('/')
         path_segments = url_without_scheme.split('/')
 
         # Validate we have a path component
-        # Starlark: Check list length and last element
         if not path_segments or not path_segments[-1]:
             fail("Cannot extract plugin name from URL: " + plugin)
 
-        # Extract name from last path segment, removing .git suffix and ref
-        # Handle both @ and # for refs/branches
+        # Extract name from last path segment, removing .git suffix and @ref
         last_segment = path_segments[-1]
-        # Remove @ref if present (e.g., repo@main)
+        # Remove @ref if present (e.g., repo@main) - ref is parsed later by cc_import
         if '@' in last_segment:
             last_segment = last_segment.split('@')[0]
-        # Remove #ref if present (e.g., repo#branch)
-        if '#' in last_segment:
-            last_segment = last_segment.split('#')[0]
         # Remove .git suffix
         name = last_segment.replace('.git', '')
 
@@ -734,7 +747,8 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         if not name:
             fail("Cannot extract plugin name from URL: " + plugin)
 
-        return {'name': name, 'url': plugin, '_from_cli': True}
+        # Standalone: repo_path='.' means Tiltfile at repo root
+        return {'name': name, 'url': plugin, 'repo_path': '.', '_from_cli': True}
     
     # Resolve local paths to absolute
     # Note: Path traversal (../) is intentional and expected for local development.
