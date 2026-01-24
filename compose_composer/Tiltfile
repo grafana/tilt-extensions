@@ -76,6 +76,15 @@ def _get_active_profiles():
 # Module-level active profiles (computed once at load time)
 _active_profiles = _get_active_profiles()
 
+# Reserved symbols that are handled specially by compose_composer
+# and should not be auto-bound to plugin structs
+_RESERVED_SYMBOLS = [
+    'cc_export',
+    'get_wire_when',
+    'cc_setup',
+    'process_accumulated_modifications',
+]
+
 def cc_get_active_profiles():
     """
     Get the list of currently active profiles.
@@ -474,7 +483,31 @@ def _parse_url_with_ref(url):
 
     return (url, None)
 
-def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, imports=[], profiles=[], labels=[], resource_deps=[]):
+def _is_bindable_symbol(name, value):
+    """
+    Check if a symbol should be auto-bound to the plugin struct.
+
+    A symbol is bindable if it:
+    - Does not start with underscore (public symbol)
+    - Is not a reserved compose_composer symbol
+    - Is a function (not a constant or other type)
+    """
+    # Skip underscore-prefixed (internal) symbols
+    if name.startswith('_'):
+        return False
+
+    # Skip reserved compose_composer symbols
+    if name in _RESERVED_SYMBOLS:
+        return False
+
+    # Only bind callable symbols (functions)
+    # Starlark: type() returns string like 'function', 'dict', 'list', etc.
+    if type(value) != 'function':
+        return False
+
+    return True
+
+def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
 
@@ -494,7 +527,6 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
              If both url@ref and ref parameter are provided, ref parameter takes precedence
         repo_path: Path within repo (default: name)
         compose_overrides: Static overrides dict (optional)
-        imports: List of symbol names to bind to the struct (optional)
         profiles: List of profile names this dependency belongs to (optional)
                   If empty, the dependency is always included (default behavior)
         labels: List of Tilt labels for grouping services in the UI (optional)
@@ -514,18 +546,19 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
           - resource_deps: List of Tilt resource names for dependency ordering
           - compose_overrides(): Bound method for specifying overrides (returns modification dict)
           - _symbols: dict of loaded symbols
-          - Bound helper functions from imports list
+          - Bound public helper functions (all functions not starting with _)
 
     Example:
-        # New style: ref embedded in URL
+        # With ref embedded in URL
         k3s = cc_import(
             name='k3s-apiserver',
             url='https://github.com/grafana/composables@v1.2.3',
-            imports=['register_crds'],
             labels=['infra'],
         )
+        # Public helpers like register_crds() are auto-bound
+        k3s.register_crds(crd_paths=[...])
 
-        # Old style: still supported
+        # With explicit ref parameter
         k3s = cc_import(
             name='k3s-apiserver',
             url='https://github.com/grafana/composables',
@@ -635,14 +668,11 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         'modifications': modifications,
     }
 
-    # Bind imported helper functions with target metadata wrapper
-    for fn_name in imports:
-        if fn_name not in symbols:
-            fail("Extension " + name + " does not export '" + fn_name + "'")
-
-        # Wrap to add _target metadata to results
-        original_fn = symbols[fn_name]
-        struct_fields[fn_name] = _add_target_wrapper(original_fn, name)
+    # Auto-bind all public callable symbols (no underscore prefix)
+    # Starlark: .items() is supported on dicts
+    for fn_name, fn_value in symbols.items():
+        if _is_bindable_symbol(fn_name, fn_value):
+            struct_fields[fn_name] = _add_target_wrapper(fn_value, name)
 
     # Bind universal compose_overrides() method to all composables
     struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name)
@@ -1580,7 +1610,7 @@ def cc_generate_master_compose(
         overrides when needed.
 
     Example (Plugin-declared modifications - RECOMMENDED):
-        k3s = cc_import(name='k3s-apiserver', url='...', imports=['register_crds'])
+        k3s = cc_import(name='k3s-apiserver', url='...')
         mysql = cc_import(name='mysql', url='...')
 
         def cc_export():
@@ -1924,4 +1954,6 @@ def cc_test_exports():
         'parse_volume_mount': _parse_volume_mount,
         'validate_volume_mounts': _validate_volume_mounts,
         'run_plugin_setup': _run_plugin_setup,
+        'is_bindable_symbol': _is_bindable_symbol,
+        'RESERVED_SYMBOLS': _RESERVED_SYMBOLS,
     }

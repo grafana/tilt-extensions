@@ -21,6 +21,8 @@ parse_url_with_ref = _internals['parse_url_with_ref']
 get_compose_path_from_dep = _internals['get_compose_path_from_dep']
 is_named_volume = _internals['is_named_volume']
 run_plugin_setup = _internals['run_plugin_setup']
+is_bindable_symbol = _internals['is_bindable_symbol']
+RESERVED_SYMBOLS = _internals['RESERVED_SYMBOLS']
 
 # ============================================================================
 # Test Helpers
@@ -1922,6 +1924,50 @@ def test_local_plugin_cc_setup_with_symbols():
     print("  [PASS] test_local_plugin_cc_setup_with_symbols")
 
 # ============================================================================
+# Auto-bind Symbol Tests
+# ============================================================================
+
+def test_is_bindable_symbol_public_function():
+    """Test that public functions are bindable."""
+    def public_fn():
+        return {}
+
+    assert_true(is_bindable_symbol('register_crds', public_fn), "Public function should be bindable")
+    assert_true(is_bindable_symbol('create_namespace', public_fn), "Public function should be bindable")
+    assert_true(is_bindable_symbol('my_helper', public_fn), "Public function should be bindable")
+    print("  [PASS] test_is_bindable_symbol_public_function")
+
+def test_is_bindable_symbol_underscore_prefix():
+    """Test that underscore-prefixed symbols are NOT bindable."""
+    def internal_fn():
+        return {}
+
+    assert_true(not is_bindable_symbol('_internal_helper', internal_fn), "Underscore prefix should not be bindable")
+    assert_true(not is_bindable_symbol('_private', internal_fn), "Underscore prefix should not be bindable")
+    assert_true(not is_bindable_symbol('__dunder', internal_fn), "Double underscore should not be bindable")
+    print("  [PASS] test_is_bindable_symbol_underscore_prefix")
+
+def test_is_bindable_symbol_reserved_symbols():
+    """Test that reserved symbols are NOT bindable."""
+    def reserved_fn():
+        return {}
+
+    # Test all reserved symbols
+    for reserved in RESERVED_SYMBOLS:
+        assert_true(not is_bindable_symbol(reserved, reserved_fn),
+                    "Reserved symbol '" + reserved + "' should not be bindable")
+
+    print("  [PASS] test_is_bindable_symbol_reserved_symbols")
+
+def test_is_bindable_symbol_non_functions():
+    """Test that non-function symbols are NOT bindable."""
+    assert_true(not is_bindable_symbol('CONSTANT', 'string_value'), "String should not be bindable")
+    assert_true(not is_bindable_symbol('MY_LIST', [1, 2, 3]), "List should not be bindable")
+    assert_true(not is_bindable_symbol('MY_DICT', {'key': 'value'}), "Dict should not be bindable")
+    assert_true(not is_bindable_symbol('MY_INT', 42), "Int should not be bindable")
+    print("  [PASS] test_is_bindable_symbol_non_functions")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -2079,6 +2125,12 @@ def run_tests():
     test_run_plugin_setup_context_values()
     test_run_plugin_setup_no_cc_setup()
     test_local_plugin_cc_setup_with_symbols()
+
+    print("\n=== Auto-bind Symbol Tests ===")
+    test_is_bindable_symbol_public_function()
+    test_is_bindable_symbol_underscore_prefix()
+    test_is_bindable_symbol_reserved_symbols()
+    test_is_bindable_symbol_non_functions()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
