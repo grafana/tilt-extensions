@@ -18,7 +18,7 @@ compose_composer is a Tilt extension (~1900 lines of Starlark) that enables dyna
 
 ### Key Functions (Tiltfile)
 
-- `cc_import(name, url, ...)` - Load a remote composable and return a plugin struct
+- `cc_import(name, ...)` - Load a remote composable and return a plugin struct (URL defaults to `COMPOSABLES_URL` env var or `https://github.com/grafana/composables@main`)
 - `cc_create(name, compose_path, *deps, ...)` - Declare a local plugin with dependencies
 - `cc_parse_cli_plugins(tiltfile_dir)` - Parse CLI args into plugin structs
 - `cc_generate_master_compose(root, cli_plugins, ...)` - Assemble dependency tree into master compose
@@ -111,6 +111,7 @@ Optional exports:
 
 ## Environment Variables
 
+- `COMPOSABLES_URL` - Default URL for `cc_import()` when `url` parameter is not provided (default: `https://github.com/grafana/composables@main`)
 - `CC_PROFILES` - Comma-separated list of profiles to activate
 - `CC_SKIP_SETUP` - Skip calling `cc_setup()` for all plugins
 - `CC_DRY_RUN` - Generate files but skip starting containers

@@ -507,7 +507,10 @@ def _is_bindable_symbol(name, value):
 
     return True
 
-def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
+# Default URL for cc_import when no url parameter is provided
+_DEFAULT_COMPOSABLES_URL = 'https://github.com/grafana/composables@main'
+
+def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
     Declare a dependency on a remote plugin and load its extension.
 
@@ -520,7 +523,9 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
 
     Args:
         name: Extension name (required)
-        url: Extension repo URL - file:// or https:// (default: 'https://github.com/grafana/composables')
+        url: Extension repo URL - file:// or https:// (optional)
+             If not provided, uses COMPOSABLES_URL env var or default:
+             'https://github.com/grafana/composables@main'
              Can include @ref suffix for git repos: 'https://github.com/user/repo@branch'
         ref: Git ref for https:// URLs (default: 'main')
              Optional if ref is embedded in URL with @ syntax
@@ -536,6 +541,11 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
                        Use this to make imported composable services wait for build tasks or other resources
                        Example: resource_deps=['frontend-build', 'backend-build']
 
+    Environment Variables:
+        COMPOSABLES_URL: Default URL when 'url' parameter is not provided.
+                        Example: 'https://github.com/grafana/composables@v2.0.0'
+                        Example: 'file:///local/path/to/composables' (for local development)
+
     Returns:
         struct with:
           - name, url, ref, repo_path, compose_overrides (dependency metadata)
@@ -549,7 +559,12 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
           - Bound public helper functions (all functions not starting with _)
 
     Example:
-        # With ref embedded in URL
+        # Simplest usage - uses COMPOSABLES_URL env var or default
+        k3s = cc_import(name='k3s-apiserver', labels=['k8s'])
+        mysql = cc_import(name='mysql', labels=['infra'])
+        grafana = cc_import(name='grafana', labels=['grafana'])
+
+        # With explicit URL (takes precedence over env var)
         k3s = cc_import(
             name='k3s-apiserver',
             url='https://github.com/grafana/composables@v1.2.3',
@@ -569,7 +584,6 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         # Only included when 'dev' or 'full' profile is active
         mysql = cc_import(
             name='mysql',
-            url='https://github.com/grafana/composables@main',
             profiles=['dev', 'full'],
             labels=['infra'],
         )
@@ -584,11 +598,14 @@ def cc_import(name, url='https://github.com/grafana/composables', ref=None, repo
         # With resource dependencies (wait for build tasks to complete)
         grafana = cc_import(
             name='grafana',
-            url='https://github.com/grafana/composables@main',
             resource_deps=['frontend-build', 'backend-build'],
             labels=['infra'],
         )
     """
+    # Resolve URL: explicit parameter > env var > default
+    if url == None:
+        url = os.environ.get('COMPOSABLES_URL', _DEFAULT_COMPOSABLES_URL)
+
     # Parse URL for embedded ref (url@ref syntax)
     parsed_url, parsed_ref = _parse_url_with_ref(url)
 
