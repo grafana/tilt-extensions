@@ -149,7 +149,7 @@ def _run_plugin_setup(dependencies, staging_dir, orchestrator_dir):
     else:
         print("  Completed setup for " + str(setup_count) + " plugin(s)")
 
-def cc_docker_compose(master_compose, **kwargs):
+def cc_docker_compose(master_compose, project_name=None, **kwargs):
     """
     Invoke docker_compose() with active profiles automatically set via environment,
     run cc_setup() for all plugins, and auto-register services with dc_resource().
@@ -186,11 +186,16 @@ def cc_docker_compose(master_compose, **kwargs):
                         Expected to have 'include' key for compose files,
                         '_service_to_labels' for label mapping, '_dependencies' for
                         plugin setup, and '_staging_dir' for context.
+        project_name: Docker Compose project name (optional). When provided, passed
+                     to docker_compose(). Use cc_init() for automatic project naming.
         **kwargs: Additional arguments passed to docker_compose()
 
     Example:
         master = cc_generate_master_compose(cc_export(), cli_plugins)
         cc_docker_compose(master)  # Runs cc_setup() then docker_compose()
+
+        # With project name (or use cc_init() for automatic handling):
+        cc_docker_compose(master, project_name='my-project')
 
         # Legacy pattern (skips auto-registration with warning):
         # cc_docker_compose(encode_yaml(master))
@@ -267,7 +272,10 @@ def cc_docker_compose(master_compose, **kwargs):
         return
 
     # Call docker_compose to load the configuration
-    docker_compose(compose_to_load, **kwargs)
+    if project_name:
+        docker_compose(compose_to_load, project_name=project_name, **kwargs)
+    else:
+        docker_compose(compose_to_load, **kwargs)
 
     # Auto-register services with dc_resource() using their labels and resource_deps
     # Note: Docker Compose filters services based on COMPOSE_PROFILES at runtime.
@@ -1944,6 +1952,130 @@ def cc_generate_master_compose(
     print("\nMaster compose written to: " + master_compose_path)
 
     return master
+
+# ============================================================================
+# Fluent API (cc_init)
+# ============================================================================
+
+def cc_init(
+    name,
+    composables_url=None,
+    staging_dir=None,
+    orchestrator_dir=None,
+):
+    """
+    Initialize compose_composer and return a struct with bound methods.
+
+    This provides a fluent API where context (project name, URLs, directories)
+    is captured at initialization time and automatically applied to method calls.
+
+    Args:
+        name: Docker Compose project name (required). Passed to docker_compose().
+        composables_url: Default URL for import() when url parameter is not provided.
+                        Falls back to COMPOSABLES_URL env var or default.
+        staging_dir: Default staging directory for generated files.
+                    Falls back to {orchestrator_dir}/.cc
+        orchestrator_dir: Directory of the orchestrating Tiltfile.
+                         Falls back to os.path.dirname(config.main_path).
+
+    Returns:
+        struct with:
+          - name: Docker Compose project name
+          - composables_url: Resolved default composables URL
+          - staging_dir: Resolved staging directory
+          - orchestrator_dir: Resolved orchestrator directory
+          - use(): Load remote composable (bound version of cc_import)
+          - create(): Declare local plugin (bound version of cc_create)
+          - generate_master_compose(): Assemble dependency tree
+          - parse_cli_plugins(): Parse CLI args to plugins
+          - docker_compose(): Wrapper for Tilt's docker_compose()
+          - get_active_profiles(): Query active profiles
+          - test_exports(): Expose internals for testing
+
+    Example:
+        cc = cc_init('my-project')
+        k3s = cc.use('k3s-apiserver', labels=['k8s'])
+        grafana = cc.use('grafana', labels=['app'])
+
+        def cc_export():
+            return cc.create('my-plugin', os.path.dirname(__file__) + '/compose.yaml', k3s, grafana)
+
+        if __file__ == config.main_path:
+            master = cc.generate_master_compose(cc_export(), cc.parse_cli_plugins(os.path.dirname(__file__)))
+            cc.docker_compose(master)
+    """
+    # Resolve context with defaults
+    _name = name
+    _composables_url = composables_url
+    if _composables_url == None:
+        _composables_url = os.environ.get('COMPOSABLES_URL', _DEFAULT_COMPOSABLES_URL)
+
+    # orchestrator_dir defaults to the directory of the main Tiltfile
+    _orchestrator_dir = orchestrator_dir
+    if _orchestrator_dir == None:
+        _orchestrator_dir = os.path.dirname(config.main_path)
+
+    # staging_dir defaults to orchestrator_dir/.cc
+    _staging_dir = staging_dir
+    if _staging_dir == None:
+        _staging_dir = _orchestrator_dir + '/.cc'
+
+    # Bound methods close over context
+    def _import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
+        actual_url = url if url != None else _composables_url
+        return cc_import(
+            name=name,
+            url=actual_url,
+            ref=ref,
+            repo_path=repo_path,
+            compose_overrides=compose_overrides,
+            profiles=profiles,
+            labels=labels,
+            resource_deps=resource_deps,
+        )
+
+    def _create(name, compose_path, *dependencies, **kwargs):
+        return cc_create(name, compose_path, *dependencies, **kwargs)
+
+    def _generate_master_compose(root_plugin, cli_plugins=[], staging_dir=None, modifications=[]):
+        actual_staging_dir = staging_dir if staging_dir != None else _staging_dir
+        return cc_generate_master_compose(
+            root_plugin=root_plugin,
+            cli_plugins=cli_plugins,
+            staging_dir=actual_staging_dir,
+            modifications=modifications,
+        )
+
+    def _parse_cli_plugins(tiltfile_dir):
+        return cc_parse_cli_plugins(tiltfile_dir)
+
+    def _docker_compose(master_compose, **kwargs):
+        return cc_docker_compose(master_compose, project_name=_name, **kwargs)
+
+    def _get_active_profiles():
+        return cc_get_active_profiles()
+
+    def _test_exports():
+        return cc_test_exports()
+
+    # Build struct fields dict first, then unpack
+    struct_fields = {
+        # Context fields (read-only)
+        'name': _name,
+        'composables_url': _composables_url,
+        'staging_dir': _staging_dir,
+        'orchestrator_dir': _orchestrator_dir,
+
+        # Bound methods
+        'use': _import,  # cc.use('mysql') - load a composable
+        'create': _create,
+        'generate_master_compose': _generate_master_compose,
+        'parse_cli_plugins': _parse_cli_plugins,
+        'docker_compose': _docker_compose,
+        'get_active_profiles': _get_active_profiles,
+        'test_exports': _test_exports,
+    }
+    return struct(**struct_fields)
 
 # ============================================================================
 # Test Exports

@@ -2,7 +2,7 @@
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
 
-load('../Tiltfile', 'cc_test_exports', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles')
+load('../Tiltfile', 'cc_test_exports', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles', 'cc_init')
 
 # Get internal functions for testing
 _internals = cc_test_exports()
@@ -1968,6 +1968,129 @@ def test_is_bindable_symbol_non_functions():
     print("  [PASS] test_is_bindable_symbol_non_functions")
 
 # ============================================================================
+# cc_init Tests
+# ============================================================================
+
+def test_cc_init_returns_struct_with_methods():
+    """Test that cc_init returns a struct with expected methods."""
+    cc = cc_init('test-project')
+
+    # Check context fields
+    assert_true(hasattr(cc, 'name'), "Should have name field")
+    assert_equals(cc.name, 'test-project', "Name should match")
+    assert_true(hasattr(cc, 'composables_url'), "Should have composables_url field")
+    assert_true(hasattr(cc, 'staging_dir'), "Should have staging_dir field")
+    assert_true(hasattr(cc, 'orchestrator_dir'), "Should have orchestrator_dir field")
+
+    # Check bound methods exist
+    assert_true(hasattr(cc, 'use'), "Should have use method")
+    assert_true(hasattr(cc, 'create'), "Should have create method")
+    assert_true(hasattr(cc, 'generate_master_compose'), "Should have generate_master_compose method")
+    assert_true(hasattr(cc, 'parse_cli_plugins'), "Should have parse_cli_plugins method")
+    assert_true(hasattr(cc, 'docker_compose'), "Should have docker_compose method")
+    assert_true(hasattr(cc, 'get_active_profiles'), "Should have get_active_profiles method")
+    assert_true(hasattr(cc, 'test_exports'), "Should have test_exports method")
+
+    print("  [PASS] test_cc_init_returns_struct_with_methods")
+
+def test_cc_init_use_method_works():
+    """Test that cc.use() method works."""
+    cc = cc_init('test-project')
+
+    # The use method should be callable
+    # We can't fully test it without a real composable, but we can verify it exists
+    assert_true(type(cc.use) == 'function', "use should be a function")
+
+    print("  [PASS] test_cc_init_use_method_works")
+
+def test_cc_init_create_method_works():
+    """Test that cc.create() method works like cc_create()."""
+    cc = cc_init('test-project')
+
+    plugin = cc.create('my-plugin', '/path/to/compose.yaml')
+    assert_equals(plugin.name, 'my-plugin', "Plugin name should match")
+    assert_equals(plugin.compose_path, '/path/to/compose.yaml', "Compose path should match")
+    assert_true(plugin._is_local, "Should be local plugin")
+
+    print("  [PASS] test_cc_init_create_method_works")
+
+def test_cc_init_custom_composables_url():
+    """Test that cc_init accepts and uses custom composables_url."""
+    custom_url = 'file:///custom/composables'
+    cc = cc_init('test-project', composables_url=custom_url)
+
+    assert_equals(cc.composables_url, custom_url, "Should store custom URL")
+
+    print("  [PASS] test_cc_init_custom_composables_url")
+
+def test_cc_init_custom_staging_dir():
+    """Test that cc_init accepts custom staging_dir."""
+    custom_staging = '/custom/staging/dir'
+    cc = cc_init('test-project', staging_dir=custom_staging)
+
+    assert_equals(cc.staging_dir, custom_staging, "Should store custom staging dir")
+
+    print("  [PASS] test_cc_init_custom_staging_dir")
+
+def test_cc_init_custom_orchestrator_dir():
+    """Test that cc_init accepts custom orchestrator_dir."""
+    custom_orch = '/custom/orchestrator/dir'
+    cc = cc_init('test-project', orchestrator_dir=custom_orch)
+
+    assert_equals(cc.orchestrator_dir, custom_orch, "Should store custom orchestrator dir")
+
+    print("  [PASS] test_cc_init_custom_orchestrator_dir")
+
+def test_cc_init_multiple_instances_independent():
+    """Test that multiple cc_init() calls create independent instances."""
+    cc1 = cc_init('project-one', composables_url='file:///path1')
+    cc2 = cc_init('project-two', composables_url='file:///path2')
+
+    assert_equals(cc1.name, 'project-one', "cc1 name should be project-one")
+    assert_equals(cc2.name, 'project-two', "cc2 name should be project-two")
+    assert_equals(cc1.composables_url, 'file:///path1', "cc1 URL should be path1")
+    assert_equals(cc2.composables_url, 'file:///path2', "cc2 URL should be path2")
+
+    print("  [PASS] test_cc_init_multiple_instances_independent")
+
+def test_cc_init_get_active_profiles_method():
+    """Test that cc.get_active_profiles() works."""
+    cc = cc_init('test-project')
+
+    profiles = cc.get_active_profiles()
+    assert_true(type(profiles) == 'list', "Should return a list")
+
+    print("  [PASS] test_cc_init_get_active_profiles_method")
+
+def test_cc_init_test_exports_method():
+    """Test that cc.test_exports() returns internal functions."""
+    cc = cc_init('test-project')
+
+    exports = cc.test_exports()
+    assert_true(type(exports) == 'dict', "Should return a dict")
+    assert_true('deep_merge' in exports, "Should have deep_merge")
+
+    print("  [PASS] test_cc_init_test_exports_method")
+
+def test_cc_init_default_orchestrator_dir():
+    """Test that orchestrator_dir defaults to os.path.dirname(config.main_path)."""
+    cc = cc_init('test-project')
+
+    expected_dir = os.path.dirname(config.main_path)
+    assert_equals(cc.orchestrator_dir, expected_dir, "orchestrator_dir should default to dirname of config.main_path")
+
+    print("  [PASS] test_cc_init_default_orchestrator_dir")
+
+def test_cc_init_default_staging_dir():
+    """Test that staging_dir defaults to orchestrator_dir/.cc."""
+    cc = cc_init('test-project')
+
+    expected_staging = os.path.dirname(config.main_path) + '/.cc'
+    assert_equals(cc.staging_dir, expected_staging, "staging_dir should default to orchestrator_dir/.cc")
+
+    print("  [PASS] test_cc_init_default_staging_dir")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -2131,6 +2254,19 @@ def run_tests():
     test_is_bindable_symbol_underscore_prefix()
     test_is_bindable_symbol_reserved_symbols()
     test_is_bindable_symbol_non_functions()
+
+    print("\n=== cc_init Tests ===")
+    test_cc_init_returns_struct_with_methods()
+    test_cc_init_use_method_works()
+    test_cc_init_create_method_works()
+    test_cc_init_custom_composables_url()
+    test_cc_init_custom_staging_dir()
+    test_cc_init_custom_orchestrator_dir()
+    test_cc_init_multiple_instances_independent()
+    test_cc_init_get_active_profiles_method()
+    test_cc_init_test_exports_method()
+    test_cc_init_default_orchestrator_dir()
+    test_cc_init_default_staging_dir()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
