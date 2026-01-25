@@ -606,7 +606,8 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
             struct_fields[fn_name] = _add_target_wrapper(fn_value, name, cc)
 
     # Bind universal compose_overrides() method to all composables
-    struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name, cc)
+    # Note: compose_overrides doesn't need cc, so pass None to avoid cc injection
+    struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name, None)
 
     return struct(**struct_fields)
 
@@ -1058,7 +1059,7 @@ def _collect_wire_when_rules(loaded_deps, cc=None):
         if not get_wire_when:
             continue
 
-        # Call get_wire_when() from the extension, passing cc if available
+        # Call get_wire_when() from the extension, passing cc for orchestrator context
         if cc != None:
             wire_when = get_wire_when(cc)
         else:
