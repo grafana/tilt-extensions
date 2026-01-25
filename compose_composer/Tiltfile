@@ -443,8 +443,8 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
         _symbols=symbols,
         _is_local=True,
         _from_cli=False,
-        # Bind universal compose_overrides() method
-        compose_overrides=_add_target_wrapper(_compose_overrides_method, name),
+        # Bind universal compose_overrides() method (cc=None for standalone usage)
+        compose_overrides=_add_target_wrapper(_compose_overrides_method, name, None),
     )
 
 # ============================================================================
@@ -517,6 +517,99 @@ def _is_bindable_symbol(name, value):
 
 # Default URL for cc_import when no url parameter is provided
 _DEFAULT_COMPOSABLES_URL = 'https://github.com/grafana/composables@main'
+
+def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
+    """
+    Internal function to import a composable with orchestrator context.
+
+    This is the core implementation that accepts a cc struct and passes it
+    to the extension's cc_export(cc) function and to helper wrappers.
+
+    Args:
+        cc: The orchestrator's cc struct (from cc_init). Can be None for backwards compat.
+        (remaining args same as cc_import)
+    """
+    # Resolve URL: explicit parameter > env var > default
+    if url == None:
+        url = os.environ.get('COMPOSABLES_URL', _DEFAULT_COMPOSABLES_URL)
+
+    # Parse URL for embedded ref (url@ref syntax)
+    parsed_url, parsed_ref = _parse_url_with_ref(url)
+
+    # Priority: explicit ref parameter > embedded in URL > None
+    final_ref = ref
+    if ref == None:
+        final_ref = parsed_ref
+
+    # Use parsed URL (without @ref suffix) for the rest of the function
+    url = parsed_url
+    ref = final_ref
+
+    # Use name as default repo_path
+    if repo_path == None:
+        repo_path = name
+
+    # Register extension repo + extension
+    repo_name = 'cc-' + name
+
+    if url.startswith('file://'):
+        v1alpha1.extension_repo(name=repo_name, url=url)
+    else:
+        v1alpha1.extension_repo(name=repo_name, url=url, ref=ref if ref else 'main')
+
+    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
+    symbols = load_dynamic('ext://' + name)
+
+    # Get plugin info from cc_export() export (required)
+    export_fn = symbols.get('cc_export')
+    if not export_fn:
+        fail("Extension '" + name + "' must export cc_export() function")
+
+    # Call the extension's cc_export() function, passing cc if available
+    if cc != None:
+        plugin_info = export_fn(cc)
+    else:
+        plugin_info = export_fn()
+
+    if not hasattr(plugin_info, 'compose_path'):
+        fail("Extension '" + name + "' cc_export() must return struct with 'compose_path' field")
+
+    compose_path = plugin_info.compose_path
+
+    if not compose_path:
+        fail("Extension '" + name + "' has empty compose_path")
+
+    nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
+    modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
+
+    # Build struct fields
+    struct_fields = {
+        'name': name,
+        'url': url,
+        'ref': ref,
+        'repo_path': repo_path,
+        'compose_path': compose_path,
+        '_compose_overrides_param': compose_overrides,
+        'dependencies': nested_deps,
+        'profiles': profiles,
+        'labels': labels,
+        'resource_deps': resource_deps,
+        '_symbols': symbols,
+        '_from_cli': False,
+        '_is_local': False,
+        'modifications': modifications,
+    }
+
+    # Auto-bind all public callable symbols (no underscore prefix)
+    for fn_name, fn_value in symbols.items():
+        if _is_bindable_symbol(fn_name, fn_value):
+            struct_fields[fn_name] = _add_target_wrapper(fn_value, name, cc)
+
+    # Bind universal compose_overrides() method to all composables
+    struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name, cc)
+
+    return struct(**struct_fields)
+
 
 def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
@@ -610,115 +703,45 @@ def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, pr
             labels=['infra'],
         )
     """
-    # Resolve URL: explicit parameter > env var > default
-    if url == None:
-        url = os.environ.get('COMPOSABLES_URL', _DEFAULT_COMPOSABLES_URL)
+    # Delegate to internal function with cc=None (no orchestrator context)
+    # When used via cc.use(), the bound _import passes cc from mutable container
+    return _cc_import_with_context(
+        cc=None,
+        name=name,
+        url=url,
+        ref=ref,
+        repo_path=repo_path,
+        compose_overrides=compose_overrides,
+        profiles=profiles,
+        labels=labels,
+        resource_deps=resource_deps,
+    )
 
-    # Parse URL for embedded ref (url@ref syntax)
-    parsed_url, parsed_ref = _parse_url_with_ref(url)
-
-    # Priority: explicit ref parameter > embedded in URL > None
-    # This maintains backward compatibility while supporting new syntax
-    final_ref = ref
-    if ref == None:
-        final_ref = parsed_ref
-
-    # Use parsed URL (without @ref suffix) for the rest of the function
-    url = parsed_url
-    ref = final_ref
-
-    # Use name as default repo_path
-    if repo_path == None:
-        repo_path = name
-    
-    # Register extension repo + extension
-    # Use 'cc-' prefix for repo name to avoid conflicts with user's own registrations
-    repo_name = 'cc-' + name
-
-    # Note: As of Tilt v0.36.0+, v1alpha1.extension_repo() is idempotent
-    # when called with identical (name, url) parameters.
-    #
-    # CRITICAL: The url must be string-identical, not just resolve to the same path.
-    # Tilt keys on the exact string match. This means:
-    #   - All plugins sharing a dependency MUST use the same URL string
-    #   - Recommended: Use environment variable (COMPOSABLES_URL) for consistency
-    #   - Example: url=os.getenv('COMPOSABLES_URL', 'file:///default/path')
-    #
-    # For older Tilt versions, users may encounter "already registered" errors.
-    # Solution: upgrade to Tilt v0.36.0+ and ensure consistent URL strings.
-    if url.startswith('file://'):
-        v1alpha1.extension_repo(name=repo_name, url=url)
-    else:
-        v1alpha1.extension_repo(name=repo_name, url=url, ref=ref if ref else 'main')
-
-    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
-    symbols = load_dynamic('ext://' + name)
-    
-    # Get plugin info from cc_export() export (required)
-    export_fn = symbols.get('cc_export')
-    if not export_fn:
-        fail("Extension '" + name + "' must export cc_export() function")
-
-    # Call the extension's cc_export() function
-    plugin_info = export_fn()
-
-    # Starlark: Use hasattr() to check for required fields (supported in Tilt's Starlark)
-    if not hasattr(plugin_info, 'compose_path'):
-        fail("Extension '" + name + "' cc_export() must return struct with 'compose_path' field")
-
-    compose_path = plugin_info.compose_path
-
-    # Verify compose_path is not empty/None
-    if not compose_path:
-        fail("Extension '" + name + "' has empty compose_path")
-
-    nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
-    modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
-    
-    # Build struct fields
-    struct_fields = {
-        'name': name,
-        'url': url,
-        'ref': ref,
-        'repo_path': repo_path,
-        'compose_path': compose_path,
-        '_compose_overrides_param': compose_overrides,
-        'dependencies': nested_deps,
-        'profiles': profiles,
-        'labels': labels,
-        'resource_deps': resource_deps,
-        '_symbols': symbols,
-        '_from_cli': False,
-        '_is_local': False,
-        'modifications': modifications,
-    }
-
-    # Auto-bind all public callable symbols (no underscore prefix)
-    # Starlark: .items() is supported on dicts
-    for fn_name, fn_value in symbols.items():
-        if _is_bindable_symbol(fn_name, fn_value):
-            struct_fields[fn_name] = _add_target_wrapper(fn_value, name)
-
-    # Bind universal compose_overrides() method to all composables
-    struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name)
-
-    return struct(**struct_fields)
-
-def _add_target_wrapper(fn, dep_name):
+def _add_target_wrapper(fn, dep_name, cc):
     """
-    Wrap a helper function to add _target metadata to the result.
+    Wrap a helper function to inject cc and add _target metadata to the result.
 
-    This tells compose_composer which dependency the modification applies to.
+    This tells compose_composer which dependency the modification applies to,
+    and provides orchestrator context (cc) to helper functions.
+
+    Args:
+        fn: The helper function to wrap
+        dep_name: The dependency name to add as _target
+        cc: The orchestrator's cc struct (can be None for backwards compat)
     """
     def wrapped(*args, **kwargs):
-        result = fn(*args, **kwargs)
-        
+        # Inject cc as first argument if available
+        if cc != None:
+            result = fn(cc, *args, **kwargs)
+        else:
+            result = fn(*args, **kwargs)
+
         # If result is a dict (like compose_overrides), add target
         if type(result) == 'dict':
             result['_target'] = dep_name
-        
+
         return result
-    
+
     return wrapped
 
 def _compose_overrides_method(overrides):
@@ -1016,23 +1039,30 @@ def _deep_copy(obj):
 # Declarative Wiring (wire_when)
 # ============================================================================
 
-def _collect_wire_when_rules(loaded_deps):
+def _collect_wire_when_rules(loaded_deps, cc=None):
     """
     Collect wire_when rules from all loaded extensions.
-    
+
+    Args:
+        loaded_deps: List of loaded dependency dicts
+        cc: Orchestrator's cc struct to pass to get_wire_when(cc) (optional)
+
     Returns a dict: {trigger_dep_name: [{source_dep, rules}, ...]}
     """
     all_rules = {}
-    
+
     for dep in loaded_deps:
         symbols = dep.get('symbols', {})
         get_wire_when = symbols.get('get_wire_when')
-        
+
         if not get_wire_when:
             continue
 
-        # Call get_wire_when() from the extension
-        wire_when = get_wire_when()
+        # Call get_wire_when() from the extension, passing cc if available
+        if cc != None:
+            wire_when = get_wire_when(cc)
+        else:
+            wire_when = get_wire_when()
 
         # Starlark: Type check before using as dict
         if type(wire_when) != 'dict':
@@ -1580,7 +1610,8 @@ def cc_generate_master_compose(
     root_plugin,
     cli_plugins=[],
     staging_dir=None,
-    modifications=[]
+    modifications=[],
+    cc=None
 ):
     """
     Generate master compose file by assembling the dependency tree.
@@ -1728,7 +1759,7 @@ def cc_generate_master_compose(
     # (wire_when rules can contain markers like _database_requirement that need
     # to be processed by callbacks before compose assembly)
     print("\nCollecting wiring rules (for markers):")
-    early_wire_when_rules = _collect_wire_when_rules(dependencies)
+    early_wire_when_rules = _collect_wire_when_rules(dependencies, cc=cc)
 
     # Extract markers from activated wire_when rules
     # (rules are "activated" when their trigger dependency is present)
@@ -1824,7 +1855,7 @@ def cc_generate_master_compose(
     # Phase 2: Collect wire_when rules from all extensions
     # ========================================================================
     print("\nCollecting wiring rules:")
-    wire_when_rules = _collect_wire_when_rules(loaded_deps)
+    wire_when_rules = _collect_wire_when_rules(loaded_deps, cc=cc)
     
     for trigger, rule_sets in wire_when_rules.items():
         sources = [rs['source_dep'] for rs in rule_sets]
@@ -2020,10 +2051,16 @@ def cc_init(
     if _staging_dir == None:
         _staging_dir = _orchestrator_dir + '/.cc'
 
-    # Bound methods close over context
+    # Mutable container pattern: allows bound methods to access cc struct
+    # The dict is captured by closure, then populated after struct creation
+    _cc_holder = {'cc': None}
+
+    # Bound methods close over context and _cc_holder
     def _import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
         actual_url = url if url != None else _composables_url
-        return cc_import(
+        # Use _cc_import_with_context to pass orchestrator's cc to composables
+        return _cc_import_with_context(
+            cc=_cc_holder['cc'],
             name=name,
             url=actual_url,
             ref=ref,
@@ -2044,6 +2081,7 @@ def cc_init(
             cli_plugins=cli_plugins,
             staging_dir=actual_staging_dir,
             modifications=modifications,
+            cc=_cc_holder['cc'],
         )
 
     def _parse_cli_plugins(tiltfile_dir):
@@ -2075,7 +2113,12 @@ def cc_init(
         'get_active_profiles': _get_active_profiles,
         'test_exports': _test_exports,
     }
-    return struct(**struct_fields)
+    cc_struct = struct(**struct_fields)
+
+    # Populate the holder so bound methods can access cc
+    _cc_holder['cc'] = cc_struct
+
+    return cc_struct
 
 # ============================================================================
 # Test Exports

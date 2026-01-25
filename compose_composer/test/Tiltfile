@@ -693,10 +693,11 @@ def test_add_target_wrapper_adds_target():
     """Test that wrapper adds _target to result."""
     def original_fn():
         return {'services': {'svc': {}}}
-    
-    wrapped = add_target_wrapper(original_fn, 'test-dep')
+
+    # Pass cc=None for backwards compatibility
+    wrapped = add_target_wrapper(original_fn, 'test-dep', None)
     result = wrapped()
-    
+
     assert_in('_target', result)
     assert_equals(result['_target'], 'test-dep')
     print("  [PASS] test_add_target_wrapper_adds_target")
@@ -707,12 +708,30 @@ def test_add_target_wrapper_passes_through_args():
     def original_fn(crd_paths):
         received.append(crd_paths)
         return {'services': {}}
-    
-    wrapped = add_target_wrapper(original_fn, 'test-dep')
+
+    # Pass cc=None for backwards compatibility
+    wrapped = add_target_wrapper(original_fn, 'test-dep', None)
     wrapped(['/path/to/crds'])
-    
+
     assert_equals(received[0], ['/path/to/crds'], "Args should pass through")
     print("  [PASS] test_add_target_wrapper_passes_through_args")
+
+def test_add_target_wrapper_injects_cc():
+    """Test that wrapper injects cc as first argument when cc is provided."""
+    received = []
+    def helper_fn(cc, crd_paths):
+        received.append({'cc': cc, 'paths': crd_paths})
+        return {'services': {}}
+
+    # Create a mock cc struct
+    mock_cc = struct(name='test-project', staging_dir='/tmp')
+
+    wrapped = add_target_wrapper(helper_fn, 'test-dep', mock_cc)
+    wrapped(['/path/to/crds'])
+
+    assert_equals(received[0]['cc'].name, 'test-project', "cc should be injected")
+    assert_equals(received[0]['paths'], ['/path/to/crds'], "Args should pass through after cc")
+    print("  [PASS] test_add_target_wrapper_injects_cc")
 
 # ============================================================================
 # Profile Tests
@@ -2165,6 +2184,7 @@ def run_tests():
     print("\n=== add_target_wrapper Tests ===")
     test_add_target_wrapper_adds_target()
     test_add_target_wrapper_passes_through_args()
+    test_add_target_wrapper_injects_cc()
     
     print("\n=== Profile Tests ===")
     test_is_dep_included_no_profiles_always_included()
