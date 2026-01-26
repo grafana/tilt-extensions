@@ -565,9 +565,23 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     url = parsed_url
     ref = final_ref
 
-    # Use name as default repo_path
+    # Determine default repo_path
     if repo_path == None:
-        repo_path = name
+        # Check if this is a standalone composable (URL ends with the name)
+        # e.g., https://github.com/grafana/gamma with name='gamma' -> repo_path='.'
+        # vs https://github.com/grafana/composables with name='mysql' -> repo_path='mysql'
+        url_without_scheme = url.split('://')[-1] if '://' in url else url
+        url_without_scheme = url_without_scheme.rstrip('/')
+        last_segment = url_without_scheme.split('/')[-1] if '/' in url_without_scheme else ''
+        # Remove .git suffix for comparison
+        last_segment = last_segment.replace('.git', '')
+
+        if last_segment == name:
+            # Standalone composable - Tiltfile at repo root
+            repo_path = '.'
+        else:
+            # Collection - composable is a subdirectory
+            repo_path = name
 
     # Register extension repo + extension
     repo_name = 'cc-' + name
