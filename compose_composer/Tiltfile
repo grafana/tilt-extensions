@@ -465,7 +465,13 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
     if cc != None:
         struct_fields['cc'] = cc
 
-    return struct(**struct_fields)
+    plugin = struct(**struct_fields)
+
+    # Register composable in cc.composables() dict if cc is available
+    if cc != None:
+        cc.composables()[name] = plugin
+
+    return plugin
 
 # ============================================================================
 # Dependency Struct (Remote Plugin Loading)
