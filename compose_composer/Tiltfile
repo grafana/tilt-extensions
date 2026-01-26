@@ -100,48 +100,46 @@ def cc_get_active_profiles():
     """
     return _active_profiles
 
-def _run_plugin_setup(dependencies, staging_dir, orchestrator_dir):
+def _run_plugin_setup(cc):
     """
-    Run cc_setup() for all plugins in dependency order.
+    Run cc_setup() for all plugins in cc.composables().
 
-    Called automatically by cc_docker_compose() before starting containers.
-    Plugins can export cc_setup(ctx) to run host-side setup commands like
-    local_resource() for build tasks.
+    Called automatically at the START of cc_generate_master_compose() so that
+    cc_setup can call helper methods like plugin.add_modification() to add
+    dynamic modifications before they are collected.
 
     Args:
-        dependencies: Flattened list of dependency dicts from cc_generate_master_compose()
-        staging_dir: Path to .cc/ staging directory
-        orchestrator_dir: Directory of the orchestrating Tiltfile
+        cc: The orchestrator context struct (from cc_init). Contains composables()
+            method that returns dict of loaded plugin structs.
     """
     skip_setup = os.getenv('CC_SKIP_SETUP', '')
     if skip_setup:
         print("[compose_composer] CC_SKIP_SETUP is set - skipping cc_setup() calls")
         return
 
-    active = cc_get_active_profiles()
+    if cc == None:
+        print("[compose_composer] No cc provided - skipping plugin setup")
+        return
+
+    composables = cc.composables()
+    if not composables:
+        return
+
     setup_count = 0
 
     print("\n[compose_composer] Running plugin setup:")
 
-    for dep in dependencies:
-        dep_name = dep.get('name', '<unknown>')
-        symbols = dep.get('symbols', {})
+    for name, plugin in composables.items():
+        # Get cc_setup from plugin's symbols
+        symbols = getattr(plugin, '_symbols', {})
         setup_fn = symbols.get('cc_setup')
 
         if not setup_fn:
             continue
 
-        # Build context struct for this plugin
-        plugin_dir = os.path.dirname(dep.get('compose_path', ''))
-        ctx = struct(
-            staging_dir=staging_dir,
-            active_profiles=active,
-            orchestrator_dir=orchestrator_dir,
-            plugin_dir=plugin_dir,
-        )
-
-        print("  Running cc_setup() for: " + dep_name)
-        setup_fn(ctx)
+        print("  Running cc_setup() for: " + name)
+        # Pass the plugin struct directly - it has cc reference for context
+        setup_fn(plugin)
         setup_count += 1
 
     if setup_count == 0:
@@ -151,48 +149,49 @@ def _run_plugin_setup(dependencies, staging_dir, orchestrator_dir):
 
 def cc_docker_compose(master_compose, project_name=None, **kwargs):
     """
-    Invoke docker_compose() with active profiles automatically set via environment,
-    run cc_setup() for all plugins, and auto-register services with dc_resource().
+    Invoke docker_compose() with active profiles automatically set via environment
+    and auto-register services with dc_resource().
 
     This is a convenience wrapper that:
     1. Sets COMPOSE_PROFILES environment variable based on cc_get_active_profiles()
-    2. Calls cc_setup(ctx) for all plugins that export it (in dependency order)
-    3. Extracts service-to-labels mapping from master_compose dict
-    4. Calls docker_compose() to load the compose configuration
-    5. Automatically registers all services with dc_resource() using their labels
+    2. Extracts service-to-labels mapping from master_compose dict
+    3. Calls docker_compose() to load the compose configuration
+    4. Automatically registers all services with dc_resource() using their labels
 
     Plugin Setup (cc_setup):
-        Plugins can export a cc_setup(ctx) function that will be called automatically
-        before docker_compose(). This enables host-side setup like local_resource()
-        for build tasks. The ctx argument is a struct with:
-        - staging_dir: Path to .cc/ staging directory
-        - active_profiles: List of active profile names
-        - orchestrator_dir: Directory of the orchestrating Tiltfile
-        - plugin_dir: The plugin's directory (convenience)
+        Plugins can export a cc_setup(plugin) function that will be called automatically
+        during cc_generate_master_compose() BEFORE dependencies are processed.
+        This enables host-side setup like local_resource() and allows cc_setup to
+        call plugin.add_modification() for dynamic modifications.
+
+        The plugin argument is the plugin struct with:
+        - name: Plugin name
+        - compose_path: Path to compose file
+        - cc: Reference to orchestrator context (if loaded via cc.use())
+        - add_modification(): Method to add dynamic modifications
 
     Note: This sets the environment variable in the Tilt process context using
     os.putenv(), which docker-compose will inherit when invoked.
 
     Environment Variables:
         CC_DRY_RUN: When set to any non-empty value, skips calling
-                                docker_compose() and dc_resource(). Useful for testing
-                                compose_composer output in staging directory without
-                                actually starting containers.
+                    docker_compose() and dc_resource(). Useful for testing
+                    compose_composer output in staging directory without
+                    actually starting containers.
         CC_SKIP_SETUP: When set to any non-empty value, skips calling cc_setup()
                        for all plugins. Useful for debugging or when setup is not needed.
 
     Args:
         master_compose: The master compose dict from cc_generate_master_compose().
                         Expected to have 'include' key for compose files,
-                        '_service_to_labels' for label mapping, '_dependencies' for
-                        plugin setup, and '_staging_dir' for context.
+                        '_service_to_labels' for label mapping.
         project_name: Docker Compose project name (optional). When provided, passed
                      to docker_compose(). Use cc_init() for automatic project naming.
         **kwargs: Additional arguments passed to docker_compose()
 
     Example:
         master = cc_generate_master_compose(cc_export(), cli_plugins)
-        cc_docker_compose(master)  # Runs cc_setup() then docker_compose()
+        cc_docker_compose(master)  # docker_compose() with auto-registration
 
         # With project name (or use cc_init() for automatic handling):
         cc_docker_compose(master, project_name='my-project')
@@ -216,22 +215,8 @@ def cc_docker_compose(master_compose, project_name=None, **kwargs):
         os.putenv('COMPOSE_PROFILES', profiles_str)
         print("[compose_composer] Setting COMPOSE_PROFILES=" + profiles_str)
 
-    # Run plugin setup before starting containers
-    # Extract dependencies and staging_dir from master_compose (if dict)
-    if type(master_compose) == 'dict':
-        dependencies = master_compose.get('_dependencies', [])
-        staging_dir = master_compose.get('_staging_dir', os.path.abspath('.cc'))
-
-        # Determine orchestrator_dir from first local plugin or staging parent
-        orchestrator_dir = os.path.dirname(staging_dir)
-        for dep in dependencies:
-            if dep.get('_is_local') and not dep.get('_from_cli'):
-                compose_path = dep.get('compose_path', '')
-                if compose_path:
-                    orchestrator_dir = os.path.dirname(compose_path)
-                break
-
-        _run_plugin_setup(dependencies, staging_dir, orchestrator_dir)
+    # NOTE: Plugin setup (cc_setup) now runs at the START of cc_generate_master_compose()
+    # so that cc_setup can call plugin.add_modification() to add dynamic modifications
 
     # Extract service-to-labels mapping before encoding
     # master_compose can be either a dict (before encoding) or a string (after encoding)
@@ -339,7 +324,13 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
     Args:
         name: Plugin name (required)
         compose_path: Absolute path to the compose file (required)
-        *dependencies: Vararg of dependency structs this plugin depends on
+        *dependencies: Vararg of dependency structs this plugin depends on.
+                      If empty and cc is provided, dependencies are inferred
+                      from cc.composables() (all loaded composables become deps).
+        cc: Optional orchestrator context struct (from cc_init). When provided:
+            - Dependencies are inferred from cc.composables() if not explicit
+            - add_modification() method is enabled for dynamic modifications
+            - cc reference is stored on plugin for later access
         profiles: List of profile names this plugin belongs to (optional)
                   If empty, the plugin is always included (default behavior)
         labels: List of Tilt labels for grouping services in the UI (optional)
@@ -373,11 +364,14 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
         struct with:
           - name: Plugin name
           - compose_path: Path to compose file
+          - plugin_dir: Directory containing the compose file (convenience for cc_setup)
           - dependencies: List of dependency structs
           - profiles: List of profile names
           - labels: List of Tilt labels for service grouping
-          - modifications: List of modification dicts
+          - modifications(): Returns list of modification dicts (static + dynamic)
+          - add_modification(): Add dynamic modification (only when cc provided)
           - compose_overrides(): Bound method for specifying overrides (returns modification dict)
+          - cc: Reference to orchestrator context (if provided)
           - _is_local: True (marker for local plugins)
 
     Example:
@@ -398,54 +392,80 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
                 labels=['admin'],
             )
 
-        # With helper-based modifications
-        def cc_export():
-            return cc_create(
+        # With helper-based modifications (new style - infer deps from cc.composables)
+        def cc_export(cc):
+            return cc.create(
                 'service-model',
                 os.path.dirname(__file__) + '/docker-compose.yaml',
-                k3s, mysql, grafana,
                 labels=['app'],
                 modifications=[
-                    k3s.register_crds(crd_paths=['definitions']),
+                    cc.composables()['k3s'].register_crds(crd_paths=['definitions']),
                 ],
             )
 
         # With cc_setup for automatic host-side setup
-        def cc_setup(ctx):
+        def cc_setup(plugin):
             local_resource('build', 'make build', labels=['Build'])
 
-        def cc_export():
-            return cc_create(
+        def cc_export(cc):
+            return cc.create(
                 'my-plugin',
                 os.path.dirname(__file__) + '/docker-compose.yaml',
-                k3s, mysql,
                 labels=['app'],
                 symbols={'cc_setup': cc_setup},
             )
     """
+    cc = kwargs.get('cc', None)
     profiles = kwargs.get('profiles', [])
     labels = kwargs.get('labels', [])
-    modifications = kwargs.get('modifications', [])
+    static_modifications = kwargs.get('modifications', [])
     symbols = kwargs.get('symbols', {})
 
     # Validate modifications is a list
-    if type(modifications) != 'list':
-        fail("modifications must be a list, got: " + str(type(modifications)))
+    if type(static_modifications) != 'list':
+        fail("modifications must be a list, got: " + str(type(static_modifications)))
 
-    return struct(
-        name=name,
-        compose_path=compose_path,
-        dependencies=list(dependencies),
-        profiles=profiles,
-        labels=labels,
-        modifications=modifications,
-        _compose_overrides_param={},
-        _symbols=symbols,
-        _is_local=True,
-        _from_cli=False,
+    # Resolve dependencies: explicit varargs > infer from cc.composables()
+    deps = list(dependencies)
+    if len(deps) == 0 and cc != None:
+        # Infer dependencies from all loaded composables
+        deps = list(cc.composables().values())
+
+    # Mutable list for dynamic modifications (added by cc_setup via add_modification)
+    _dynamic_modifications = []
+
+    def _get_modifications():
+        """Returns combined static + dynamic modifications."""
+        return static_modifications + _dynamic_modifications
+
+    def _add_modification(mod):
+        """Add a dynamic modification (called from cc_setup)."""
+        _dynamic_modifications.append(mod)
+
+    # Build struct fields
+    plugin_dir = os.path.dirname(compose_path)
+    struct_fields = {
+        'name': name,
+        'compose_path': compose_path,
+        'plugin_dir': plugin_dir,
+        'dependencies': deps,
+        'profiles': profiles,
+        'labels': labels,
+        'modifications': _get_modifications,
+        'add_modification': _add_modification,
+        '_compose_overrides_param': {},
+        '_symbols': symbols,
+        '_is_local': True,
+        '_from_cli': False,
         # Bind universal compose_overrides() method (cc=None for standalone usage)
-        compose_overrides=_add_target_wrapper(_compose_overrides_method, name, None),
-    )
+        'compose_overrides': _add_target_wrapper(_compose_overrides_method, name, None),
+    }
+
+    # Add cc reference if provided
+    if cc != None:
+        struct_fields['cc'] = cc
+
+    return struct(**struct_fields)
 
 # ============================================================================
 # Dependency Struct (Remote Plugin Loading)
@@ -580,15 +600,35 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
         fail("Extension '" + name + "' has empty compose_path")
 
     nested_deps = plugin_info.dependencies if hasattr(plugin_info, 'dependencies') else []
-    modifications = plugin_info.modifications if hasattr(plugin_info, 'modifications') else []
+
+    # Handle modifications as either a method (new cc_create) or list (backward compat)
+    # Get static modifications from plugin_info
+    static_modifications = []
+    if hasattr(plugin_info, 'modifications'):
+        mods = plugin_info.modifications
+        # If modifications is callable, call it to get the list
+        static_modifications = mods() if type(mods) == 'function' else mods
+
+    # Mutable list for dynamic modifications (added by cc_setup via add_modification)
+    _dynamic_modifications = []
+
+    def _get_modifications():
+        """Returns combined static + dynamic modifications."""
+        return static_modifications + _dynamic_modifications
+
+    def _add_modification(mod):
+        """Add a dynamic modification (called from cc_setup)."""
+        _dynamic_modifications.append(mod)
 
     # Build struct fields
+    plugin_dir = os.path.dirname(compose_path)
     struct_fields = {
         'name': name,
         'url': url,
         'ref': ref,
         'repo_path': repo_path,
         'compose_path': compose_path,
+        'plugin_dir': plugin_dir,
         '_compose_overrides_param': compose_overrides,
         'dependencies': nested_deps,
         'profiles': profiles,
@@ -597,8 +637,13 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
         '_symbols': symbols,
         '_from_cli': False,
         '_is_local': False,
-        'modifications': modifications,
+        'modifications': _get_modifications,
+        'add_modification': _add_modification,
     }
+
+    # Add cc reference if provided
+    if cc != None:
+        struct_fields['cc'] = cc
 
     # Auto-bind all public callable symbols (no underscore prefix)
     for fn_name, fn_value in symbols.items():
@@ -609,7 +654,13 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     # Note: compose_overrides doesn't need cc, so pass None to avoid cc injection
     struct_fields['compose_overrides'] = _add_target_wrapper(_compose_overrides_method, name, None)
 
-    return struct(**struct_fields)
+    plugin = struct(**struct_fields)
+
+    # Register composable in cc.composables() dict if cc is available
+    if cc != None:
+        cc.composables()[name] = plugin
+
+    return plugin
 
 
 def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
@@ -853,52 +904,68 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         '_from_cli': True,
     }
 
-def cc_parse_cli_plugins(tiltfile_dir):
+def cc_parse_cli_plugins(tiltfile_dir=None, cc=None):
     """
     Parse CLI positional args and return list of dependency structs.
-    
+
     Each CLI plugin is loaded as a dependency struct, just like core dependencies.
     This provides a uniform interface for all dependencies.
-    
+
     Args:
-        tiltfile_dir: Directory of the calling Tiltfile (for relative path resolution)
-                      Typically: os.path.dirname(__file__)
-    
+        tiltfile_dir: Directory for relative path resolution (optional).
+                      Defaults to os.path.dirname(config.main_path).
+        cc: Optional orchestrator context (from cc_init). When provided, CLI plugins
+            receive the cc context for their cc_export(cc) function.
+
     Returns:
         List of dependency structs (same type as returned by cc_import())
     """
+    # Default to main Tiltfile directory
+    if tiltfile_dir == None:
+        tiltfile_dir = os.path.dirname(config.main_path)
+
     plugins = _cfg.get('args', [])
     deps = []
-    
+
     for plugin in plugins:
         spec = _resolve_plugin_spec(plugin, tiltfile_dir)
         print("CLI plugin: " + spec['name'] + " -> " + spec['url'])
-        
+
         # Create a dependency struct (this also loads its symbols/cc_export)
-        dep = cc_import(
+        # Pass cc to _cc_import_with_context so CLI plugins get the orchestrator context
+        dep = _cc_import_with_context(
+            cc=cc,
             name=spec['name'],
             url=spec['url'],
             repo_path=spec.get('repo_path', spec['name']),
         )
         
         # Mark as from CLI (create new struct with additional fields)
-        dep = struct(
-            name=dep.name,
-            url=dep.url,
-            ref=dep.ref,
-            repo_path=dep.repo_path,
-            compose_path=dep.compose_path,
-            _compose_overrides_param=dep._compose_overrides_param,
-            dependencies=dep.dependencies,
-            profiles=dep.profiles,
-            labels=dep.labels,
-            modifications=dep.modifications,
-            _symbols=dep._symbols,
-            _from_cli=True,
-            _is_local=False,
+        # Copy modifications method (shares dynamic modifications with underlying composable)
+        cli_struct_fields = {
+            'name': dep.name,
+            'url': dep.url,
+            'ref': dep.ref,
+            'repo_path': dep.repo_path,
+            'compose_path': dep.compose_path,
+            'plugin_dir': dep.plugin_dir,
+            '_compose_overrides_param': dep._compose_overrides_param,
+            'dependencies': dep.dependencies,
+            'profiles': dep.profiles,
+            'labels': dep.labels,
+            'modifications': dep.modifications,
+            '_symbols': dep._symbols,
+            '_from_cli': True,
+            '_is_local': False,
             # Bind the compose_overrides method for CLI plugins too
-            compose_overrides=dep.compose_overrides,
-        )
+            'compose_overrides': dep.compose_overrides,
+        }
+        # Copy add_modification and cc if they exist
+        if hasattr(dep, 'add_modification'):
+            cli_struct_fields['add_modification'] = dep.add_modification
+        if hasattr(dep, 'cc'):
+            cli_struct_fields['cc'] = dep.cc
+        dep = struct(**cli_struct_fields)
         
         deps.append(dep)
     
@@ -1445,13 +1512,17 @@ def _struct_to_dict(dep_struct):
     Structs from cc_import(), cc_create(), or cc_parse_cli_plugins() need
     to be converted to dicts for the internal processing pipeline.
     """
+    # Handle modifications as either a method (new cc_create) or list
+    mods = getattr(dep_struct, 'modifications', [])
+    modifications = mods() if type(mods) == 'function' else mods
+
     result = {
         'name': dep_struct.name,
         '_compose_overrides_param': getattr(dep_struct, '_compose_overrides_param', {}),
         'profiles': getattr(dep_struct, 'profiles', []),
         'labels': getattr(dep_struct, 'labels', []),
         'resource_deps': getattr(dep_struct, 'resource_deps', []),
-        'modifications': getattr(dep_struct, 'modifications', []),
+        'modifications': modifications,
         '_from_cli': dep_struct._from_cli,
         '_is_local': getattr(dep_struct, '_is_local', False),
     }
@@ -1707,7 +1778,11 @@ def cc_generate_master_compose(
             )
     """
     staging_dir = staging_dir if staging_dir else os.path.abspath('.cc')
-    
+
+    # Run plugin setup FIRST, before flattening dependencies or collecting modifications
+    # This allows cc_setup to call plugin.add_modification() for dynamic modifications
+    _run_plugin_setup(cc)
+
     # Show active profiles
     active = cc_get_active_profiles()
     if active:
@@ -2016,6 +2091,7 @@ def cc_init(
           - composables_url: Resolved default composables URL
           - staging_dir: Resolved staging directory
           - orchestrator_dir: Resolved orchestrator directory
+          - composables(): Returns dict of loaded composables (keyed by name)
           - use(): Load remote composable (bound version of cc_import)
           - create(): Declare local plugin (bound version of cc_create)
           - generate_master_compose(): Assemble dependency tree
@@ -2056,6 +2132,10 @@ def cc_init(
     # The dict is captured by closure, then populated after struct creation
     _cc_holder = {'cc': None}
 
+    # Mutable container for loaded composables
+    # Keyed by composable name, values are plugin structs
+    _composables = {}
+
     # Bound methods close over context and _cc_holder
     def _import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
         actual_url = url if url != None else _composables_url
@@ -2073,6 +2153,8 @@ def cc_init(
         )
 
     def _create(name, compose_path, *dependencies, **kwargs):
+        # Pass cc to enable dependency inference and dynamic modifications
+        kwargs['cc'] = _cc_holder['cc']
         return cc_create(name, compose_path, *dependencies, **kwargs)
 
     def _generate_master_compose(root_plugin, cli_plugins=[], staging_dir=None, modifications=[]):
@@ -2085,8 +2167,8 @@ def cc_init(
             cc=_cc_holder['cc'],
         )
 
-    def _parse_cli_plugins(tiltfile_dir):
-        return cc_parse_cli_plugins(tiltfile_dir)
+    def _parse_cli_plugins(tiltfile_dir=None):
+        return cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
 
     def _docker_compose(master_compose, **kwargs):
         return cc_docker_compose(master_compose, project_name=_name, **kwargs)
@@ -2097,6 +2179,16 @@ def cc_init(
     def _test_exports():
         return cc_test_exports()
 
+    def _get_composables():
+        """Returns the dict of loaded composables (keyed by name)."""
+        return _composables
+
+    def _get_composable(name):
+        """Returns a composable by name, or fails if not found."""
+        if name not in _composables:
+            fail("Composable '" + name + "' not found. Available: " + str(list(_composables.keys())))
+        return _composables[name]
+
     # Build struct fields dict first, then unpack
     struct_fields = {
         # Context fields (read-only)
@@ -2104,6 +2196,10 @@ def cc_init(
         'composables_url': _composables_url,
         'staging_dir': _staging_dir,
         'orchestrator_dir': _orchestrator_dir,
+
+        # Composables dict (mutable, populated by use())
+        'composables': _get_composables,
+        'get_composable': _get_composable,
 
         # Bound methods
         'use': _import,  # cc.use('mysql') - load a composable

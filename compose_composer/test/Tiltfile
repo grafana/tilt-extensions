@@ -889,8 +889,10 @@ def test_cc_create_with_modifications():
         modifications=[mod],
     )
     assert_equals(plugin.name, 'my-plugin')
-    assert_equals(len(plugin.modifications), 1)
-    assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
+    # modifications is now a method that returns the list
+    mods = plugin.modifications()
+    assert_equals(len(mods), 1)
+    assert_equals(mods[0]['_target'], 'k3s-apiserver')
     print("  [PASS] test_cc_create_with_modifications")
 
 def test_cc_create_modifications_default_empty():
@@ -899,7 +901,8 @@ def test_cc_create_modifications_default_empty():
         'my-plugin',
         '/path/to/compose.yaml',
     )
-    assert_equals(plugin.modifications, [])
+    # modifications is now a method that returns the list
+    assert_equals(plugin.modifications(), [])
     print("  [PASS] test_cc_create_modifications_default_empty")
 
 def test_cc_create_multiple_modifications():
@@ -912,9 +915,11 @@ def test_cc_create_multiple_modifications():
         '/path/to/compose.yaml',
         modifications=[mod1, mod2],
     )
-    assert_equals(len(plugin.modifications), 2)
-    assert_equals(plugin.modifications[0]['_target'], 'k3s-apiserver')
-    assert_equals(plugin.modifications[1]['_target'], 'mysql')
+    # modifications is now a method that returns the list
+    mods = plugin.modifications()
+    assert_equals(len(mods), 2)
+    assert_equals(mods[0]['_target'], 'k3s-apiserver')
+    assert_equals(mods[1]['_target'], 'mysql')
     print("  [PASS] test_cc_create_multiple_modifications")
 
 def test_struct_to_dict_preserves_modifications():
@@ -1810,137 +1815,115 @@ def test_flatten_dependency_tree_valid_dict_dep():
 # run_plugin_setup Tests
 # ============================================================================
 
+# Helper to create a mock cc struct for testing run_plugin_setup
+def _create_mock_cc(composables_dict):
+    """Create a mock cc struct with composables for testing."""
+    def _get_composables():
+        return composables_dict
+    return struct(
+        composables=_get_composables,
+        staging_dir='/tmp/staging',
+        orchestrator_dir='/tmp/orchestrator',
+    )
+
+# Helper to create a mock plugin struct for testing
+def _create_mock_plugin(name, cc_setup_fn=None):
+    """Create a mock plugin struct for testing run_plugin_setup."""
+    symbols = {'cc_setup': cc_setup_fn} if cc_setup_fn else {}
+    return struct(
+        name=name,
+        compose_path='/path/to/' + name + '/compose.yaml',
+        _symbols=symbols,
+    )
+
 def test_run_plugin_setup_calls_cc_setup():
     """Test that run_plugin_setup calls cc_setup for plugins that export it."""
     # Use list to track calls (mutating list is allowed in closures)
     setup_calls = []
 
-    def mock_cc_setup(ctx):
-        setup_calls.append({'name': 'mock-plugin', 'ctx': ctx})
+    def mock_cc_setup(plugin):
+        setup_calls.append({'name': plugin.name, 'plugin': plugin})
 
-    dependencies = [
-        {
-            'name': 'mock-plugin',
-            'compose_path': '/path/to/compose.yaml',
-            'symbols': {'cc_setup': mock_cc_setup},
-        },
-    ]
+    # Create mock plugin and cc
+    mock_plugin = _create_mock_plugin('mock-plugin', mock_cc_setup)
+    mock_cc = _create_mock_cc({'mock-plugin': mock_plugin})
 
-    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+    run_plugin_setup(mock_cc)
 
     assert_equals(len(setup_calls), 1, "cc_setup should be called once")
     assert_equals(setup_calls[0]['name'], 'mock-plugin', "Should call correct plugin")
     print("  [PASS] test_run_plugin_setup_calls_cc_setup")
 
-def test_run_plugin_setup_dependency_order():
-    """Test that cc_setup is called in dependency order (as listed)."""
+def test_run_plugin_setup_multiple_plugins():
+    """Test that cc_setup is called for all plugins in cc.composables()."""
     setup_calls = []
 
-    def make_setup_fn(name, calls):
-        def fn(ctx):
-            calls.append(name)
+    def make_setup_fn(calls):
+        def fn(plugin):
+            calls.append(plugin.name)
         return fn
 
-    dependencies = [
-        {
-            'name': 'dep1',
-            'compose_path': '/path/dep1.yaml',
-            'symbols': {'cc_setup': make_setup_fn('dep1', setup_calls)},
-        },
-        {
-            'name': 'dep2',
-            'compose_path': '/path/dep2.yaml',
-            'symbols': {'cc_setup': make_setup_fn('dep2', setup_calls)},
-        },
-        {
-            'name': 'dep3',
-            'compose_path': '/path/dep3.yaml',
-            'symbols': {'cc_setup': make_setup_fn('dep3', setup_calls)},
-        },
-    ]
+    # Create mock plugins
+    plugins = {
+        'dep1': _create_mock_plugin('dep1', make_setup_fn(setup_calls)),
+        'dep2': _create_mock_plugin('dep2', make_setup_fn(setup_calls)),
+        'dep3': _create_mock_plugin('dep3', make_setup_fn(setup_calls)),
+    }
+    mock_cc = _create_mock_cc(plugins)
 
-    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+    run_plugin_setup(mock_cc)
 
     assert_equals(len(setup_calls), 3, "All cc_setup functions should be called")
-    assert_equals(setup_calls[0], 'dep1', "dep1 should be first")
-    assert_equals(setup_calls[1], 'dep2', "dep2 should be second")
-    assert_equals(setup_calls[2], 'dep3', "dep3 should be third")
-    print("  [PASS] test_run_plugin_setup_dependency_order")
+    # Note: dict iteration order may vary, just check all were called
+    assert_true('dep1' in setup_calls, "dep1 should be called")
+    assert_true('dep2' in setup_calls, "dep2 should be called")
+    assert_true('dep3' in setup_calls, "dep3 should be called")
+    print("  [PASS] test_run_plugin_setup_multiple_plugins")
 
-def test_run_plugin_setup_context_values():
-    """Test that context struct contains correct values."""
-    received_ctx = [None]
+def test_run_plugin_setup_passes_plugin_struct():
+    """Test that cc_setup receives the plugin struct."""
+    received_plugin = [None]
 
-    def capture_ctx(ctx):
-        received_ctx[0] = ctx
+    def capture_plugin(plugin):
+        received_plugin[0] = plugin
 
-    dependencies = [
-        {
-            'name': 'test-plugin',
-            'compose_path': '/path/to/plugin/compose.yaml',
-            'symbols': {'cc_setup': capture_ctx},
-        },
-    ]
+    mock_plugin = _create_mock_plugin('test-plugin', capture_plugin)
+    mock_cc = _create_mock_cc({'test-plugin': mock_plugin})
 
-    run_plugin_setup(dependencies, '/tmp/test-staging', '/tmp/test-orchestrator')
+    run_plugin_setup(mock_cc)
 
-    ctx = received_ctx[0]
-    assert_true(ctx != None, "Context should be captured")
-    assert_equals(ctx.staging_dir, '/tmp/test-staging', "staging_dir should match")
-    assert_equals(ctx.orchestrator_dir, '/tmp/test-orchestrator', "orchestrator_dir should match")
-    assert_equals(ctx.plugin_dir, '/path/to/plugin', "plugin_dir should be dirname of compose_path")
-    assert_true(type(ctx.active_profiles) == 'list', "active_profiles should be a list")
-    print("  [PASS] test_run_plugin_setup_context_values")
+    plugin = received_plugin[0]
+    assert_true(plugin != None, "Plugin should be captured")
+    assert_equals(plugin.name, 'test-plugin', "Plugin name should match")
+    assert_equals(plugin.compose_path, '/path/to/test-plugin/compose.yaml', "Plugin compose_path should match")
+    print("  [PASS] test_run_plugin_setup_passes_plugin_struct")
 
 def test_run_plugin_setup_no_cc_setup():
     """Test that plugins without cc_setup are skipped gracefully."""
     setup_calls = []
 
-    def mock_cc_setup(ctx):
+    def mock_cc_setup(plugin):
         setup_calls.append('has-setup')
 
-    dependencies = [
-        {
-            'name': 'no-setup-plugin',
-            'compose_path': '/path/no-setup.yaml',
-            'symbols': {},  # No cc_setup
-        },
-        {
-            'name': 'has-setup-plugin',
-            'compose_path': '/path/has-setup.yaml',
-            'symbols': {'cc_setup': mock_cc_setup},
-        },
-    ]
+    # Create plugins - one with cc_setup, one without
+    plugins = {
+        'no-setup-plugin': _create_mock_plugin('no-setup-plugin'),  # No cc_setup
+        'has-setup-plugin': _create_mock_plugin('has-setup-plugin', mock_cc_setup),
+    }
+    mock_cc = _create_mock_cc(plugins)
 
     # Should not fail, just skip plugins without cc_setup
-    run_plugin_setup(dependencies, '/tmp/staging', '/tmp/orchestrator')
+    run_plugin_setup(mock_cc)
 
     assert_equals(len(setup_calls), 1, "Only plugin with cc_setup should be called")
     assert_equals(setup_calls[0], 'has-setup', "Should call the correct plugin")
     print("  [PASS] test_run_plugin_setup_no_cc_setup")
 
-def test_local_plugin_cc_setup_with_symbols():
-    """Test that cc_setup is called for local plugins when symbols are provided."""
-    setup_calls = []
-
-    def mock_setup(ctx):
-        setup_calls.append('local-setup-called')
-
-    # Create a local plugin with symbols (using cc_create pattern)
-    local_plugin = cc_create(
-        'test-local',
-        '/path/to/local/compose.yaml',
-        symbols={'cc_setup': mock_setup},
-    )
-
-    # Flatten dependency tree (simulates what cc_generate_master_compose does)
-    deps = flatten_dependency_tree(local_plugin, [], {}, [])
-
-    # Run setup
-    run_plugin_setup(deps, '/tmp/staging', '/tmp/orchestrator')
-
-    assert_equals(len(setup_calls), 1, "cc_setup should be called for local plugin with symbols")
-    print("  [PASS] test_local_plugin_cc_setup_with_symbols")
+def test_run_plugin_setup_with_none_cc():
+    """Test that run_plugin_setup handles None cc gracefully."""
+    # Should not fail when cc is None
+    run_plugin_setup(None)
+    print("  [PASS] test_run_plugin_setup_with_none_cc")
 
 # ============================================================================
 # Auto-bind Symbol Tests
@@ -2264,10 +2247,10 @@ def run_tests():
 
     print("\n=== run_plugin_setup Tests ===")
     test_run_plugin_setup_calls_cc_setup()
-    test_run_plugin_setup_dependency_order()
-    test_run_plugin_setup_context_values()
+    test_run_plugin_setup_multiple_plugins()
+    test_run_plugin_setup_passes_plugin_struct()
     test_run_plugin_setup_no_cc_setup()
-    test_local_plugin_cc_setup_with_symbols()
+    test_run_plugin_setup_with_none_cc()
 
     print("\n=== Auto-bind Symbol Tests ===")
     test_is_bindable_symbol_public_function()
