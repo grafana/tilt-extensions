@@ -33,10 +33,10 @@ A "Composable" is a Tilt extension that wraps a docker-compose file and optional
 The [grafana/composables](https://github.com/grafana/composables) repository contains composables used across Grafana development:
 - `k3s-apiserver` - A standalone Kubernetes API server with CRD loading and webhook support
 - `grafana` - Grafana with MySQL, smart wiring to k3s when present
-- `mysql`, `postgres`, `redis` - Databases that auto-configure when other services need them
+- `mysql`, `postgres`, `redis` - Databases that auto-configure when other services need them. E.g. `mimir` will auto-provision a datasource into Grafana when it's present.
 - many more
 
-As composables are tilt extensions they can be loaded remotely from github or from the local file system.
+As composables are tilt extensions, they can be loaded remotely from github or from the local file system.
 
 Each application configured with Compose Composer is also a composable. `IRM`, `gops-labels`, `grafana-assistant-app`, etc. Any composable can be imported into any other composable. This also means that apps importing other apps is symmetrical:
 
@@ -57,7 +57,7 @@ From `grafana-assistant-app`:
 
 ### Orchestrators
 
-An "Orchestrator" in compose composer is a composable where you run `tilt up...` Any composable can be an orchestrator and `import` other composables as needed, even if those composables are themselves orchestrators.
+An "Orchestrator" in compose composer is a composable where you run `tilt up ...` Any composable can be an orchestrator and `use` other composables as needed, even if those composables are themselves orchestrators.
 
 ## The Basic Structure
 
@@ -71,17 +71,16 @@ A Composable needs a few itmes:
 Use the Compose Composer apis to import your dependencies:
 
 ```python
-# These are imported from grafana/composables
-k3s = cc_import(name='k3s-apiserver')
-grafana = cc_import(name='grafana')
-
 # Export yourself.
-def cc_export():
+def cc_export(cc):
+    # These are imported from grafana/composables
+    k3s = cc_import(name='k3s-apiserver')
+    grafana = cc_import(name='grafana')
     # Create the composable
     return cc_create(
         'my-plugin', 
         './docker-compose.yaml', 
-        k3s, grafana
+        ...
     )
 ```
 
@@ -91,10 +90,90 @@ Where `./docker-compose.yaml` is the local app's compose file.
 
 Compose Composer:
 1. **Fetches** the composables from git repos (or local paths)
-2. **Resolves** transitive dependencies (grafana needs mysql, mysql is auto-included, duplicated are removed)
-3. **Wires** components together (grafana auto-configures when it sees k3s)
+2. **Resolves** transitive dependencies (grafana needs mysql, mysql is auto-included, duplicate dependencies are removed)
+3. **Wires** components together (grafana auto-configures when it sees k3s, mimir auto-provisions datasources into Grafana)
 4. **Generates** a master docker-compose.yaml using include directives (see .cc in the orchestrator's directory)
-5. **Preserves** relative paths so volume mounts work correctly
+5. **Preserves** relative paths so volume mounts work correctly between composables.
+
+## Getting started
+
+### Writing an Orchestrator
+
+If you need to create a composable that will also run as the entry point into Grafana, the structure looks like this.
+
+Basic imports to include compose-composer as a Tilt extentions:
+
+```python
+COMPOSE_COMPOSER_URL = os.getenv('COMPOSE_COMPOSER_URL', 'https://github.com/grafana/tilt-extensions')
+COMPOSE_COMPOSER_REF = os.getenv('COMPOSE_COMPOSER_REF', 'compose-composer')
+
+# Set up extension repo
+if __file__ == config.main_path:
+    if COMPOSE_COMPOSER_REF:
+        v1alpha1.extension_repo(name='grafana-tilt-extensions', url=COMPOSE_COMPOSER_URL, ref=COMPOSE_COMPOSER_REF)
+    else:
+        v1alpha1.extension_repo(name='grafana-tilt-extensions', url=COMPOSE_COMPOSER_URL)
+    v1alpha1.extension(name='compose_composer', repo_name='grafana-tilt-extensions', repo_path='compose_composer')
+
+load('ext://compose_composer', 'cc_init')
+```
+
+By using environment variables you can override the location or branch for compose-composer.
+
+Next, create a `cc_export()` function that returns the composable. The basic structure looks like:
+
+```python
+def cc_export(cc):
+    # Define a dependency on Grafana
+    grafana = cc.use('grafana')
+
+    # Create the composable
+    return cc.create(
+        'name-of-your-composable',
+
+        # path to your minimial docker-compose file
+        os.path.dirname(__file__) + '/docker-compose.yaml',
+
+        # Tilt labels for the left-hand nav
+        labels=['app'],
+
+        # Tell compose-composer what the setup function is for this plugin. (see below)
+        symbols={'cc_setup': cc_setup},
+
+        modificiation=[] # overrides or helper methods for your dependencies
+    )
+```
+
+If you need additional Tilt resources to be run, in addition to whatever is happening in your docker-compose, then put those in `cc_setup()`:
+
+```python
+def cc_setup(composable_ctx):
+    local_resource('devenv-check', 'make devenv-check', labels=['SLO.Devenv'])
+
+    # Build locally...do other stuff out-of-docker actions
+```
+
+Resources defined in `cc_setup` can take/put tilt dependencies on other resources. So you can define the order in which things start.
+
+When you are an orchestrator, i.e. the project where `tilt up` is called, then define the "main" method:
+
+```python
+if __file__ == config.main_path:
+    # Initialize compose_composer. 'cc' gets passed to other methods later
+    # Here 'slo' becomes the docker-compose project name
+    cc = cc_init('slo')
+
+    # Parse and load CLI composables e.g. tilt up -- ../other-composable
+    cli_plugins = cc.parse_cli_plugins()
+
+    # Get the composable for this plugin
+    slo = cc_export(cc) # this is from above
+    master = cc.generate_master_compose(slo, cli_plugins)
+    # start everything
+    cc.docker_compose(master)
+```
+
+The modified and generated docker-compose.yaml files are written to the `.cc` directory in the orchestrator's directory.
 
 
 ### Examples of Ported Applications 
