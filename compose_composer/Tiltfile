@@ -2067,14 +2067,15 @@ def cc_generate_master_compose(
     }
 
     # Write master compose file to staging directory for inspection/debugging
-    # Note: Only write YAML-encodable fields (exclude _dependencies which has functions)
+    # Strip Tilt-specific internal metadata from the written file
+    # (_service_to_labels, _service_to_resource_deps, _dependencies, _staging_dir)
     master_compose_path = staging_dir + '/master-compose.yaml'
     local('mkdir -p "' + staging_dir + '"', quiet=True)
-    yaml_serializable = {
-        'include': includes,
-        '_service_to_labels': service_to_labels,
-    }
-    yaml_content = encode_yaml(yaml_serializable)
+    clean_master = {}
+    for key in master:
+        if not key.startswith('_'):
+            clean_master[key] = master[key]
+    yaml_content = encode_yaml(clean_master)
     local('cat > "' + master_compose_path + '"', stdin=yaml_content, quiet=True)
     print("\nMaster compose written to: " + master_compose_path)
 

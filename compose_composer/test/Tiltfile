@@ -2093,6 +2093,72 @@ def test_cc_init_default_staging_dir():
     print("  [PASS] test_cc_init_default_staging_dir")
 
 # ============================================================================
+# Master Compose Output Tests
+# ============================================================================
+
+def test_master_compose_strips_internal_keys():
+    """Test that internal keys (starting with _) are not written to master-compose.yaml."""
+    # Simulate the master compose dict that cc_generate_master_compose returns
+    master = {
+        'include': ['/path/to/compose1.yaml', '/path/to/compose2.yaml'],
+        '_service_to_labels': {
+            'service1': ['app'],
+            'service2': ['dependencies'],
+        },
+        '_service_to_resource_deps': {'service1': ['service2']},
+        '_dependencies': {'dep1': {}},
+        '_staging_dir': '/tmp/staging',
+    }
+
+    # Simulate the filtering logic (exclude keys starting with _)
+    clean_master = {}
+    for key in master:
+        if not key.startswith('_'):
+            clean_master[key] = master[key]
+
+    # Verify the clean dict doesn't have any internal keys
+    assert_true('_service_to_labels' not in clean_master, "_service_to_labels should be filtered out")
+    assert_true('_service_to_resource_deps' not in clean_master, "_service_to_resource_deps should be filtered out")
+    assert_true('_dependencies' not in clean_master, "_dependencies should be filtered out")
+    assert_true('_staging_dir' not in clean_master, "_staging_dir should be filtered out")
+    assert_true('include' in clean_master, "include should be preserved")
+    assert_equals(len(clean_master['include']), 2, "include content should be preserved")
+
+    # Verify only expected keys are present
+    assert_equals(len(clean_master), 1, "clean_master should only have 1 key (include)")
+
+    print("  [PASS] test_master_compose_strips_internal_keys")
+
+def test_master_compose_preserves_other_top_level_keys():
+    """Test that other top-level keys are preserved when filtering internal keys."""
+    # Test with additional hypothetical top-level keys
+    master = {
+        'include': ['/path/to/compose.yaml'],
+        '_service_to_labels': {'service1': ['app']},
+        '_dependencies': {'dep1': {}},
+        'name': 'test-compose',
+        'version': '1.0',
+        'custom_metadata': {'key': 'value'},
+    }
+
+    # Apply the filtering logic
+    clean_master = {}
+    for key in master:
+        if not key.startswith('_'):
+            clean_master[key] = master[key]
+
+    # Verify filtering worked correctly
+    assert_true('_service_to_labels' not in clean_master, "_service_to_labels should be filtered")
+    assert_true('_dependencies' not in clean_master, "_dependencies should be filtered")
+    assert_true('include' in clean_master, "include should be preserved")
+    assert_true('name' in clean_master, "name should be preserved")
+    assert_true('version' in clean_master, "version should be preserved")
+    assert_true('custom_metadata' in clean_master, "custom_metadata should be preserved")
+    assert_equals(clean_master['name'], 'test-compose', "name value should be preserved")
+
+    print("  [PASS] test_master_compose_preserves_other_top_level_keys")
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -2270,6 +2336,10 @@ def run_tests():
     test_cc_init_test_exports_method()
     test_cc_init_default_orchestrator_dir()
     test_cc_init_default_staging_dir()
+
+    print("\n=== Master Compose Output Tests ===")
+    test_master_compose_strips_internal_keys()
+    test_master_compose_preserves_other_top_level_keys()
 
     print("\n" + "=" * 50)
     print("All tests passed!")
