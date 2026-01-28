@@ -1543,40 +1543,31 @@ def cc_init(
 # ============================================================================
 # These are exported for unit testing. Not intended for general use.
 
-# Wrapper functions for backwards compatibility with tests
-def _struct_to_dict(dep_struct):
-    """Wrapper for tests - maintains old signature."""
-    return dependency_graph.struct_to_dict(dep_struct, util)
-
-def _apply_modifications(dependencies, modifications):
-    """Wrapper for tests - maintains old signature."""
-    return dependency_graph.apply_modifications(dependencies, modifications, util)
-
+# Wrapper function for backwards compatibility with tests (only needed for conditional logic)
 def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles=None):
-    """Wrapper for tests - maintains old signature."""
+    """Wrapper for tests - maintains old signature with active_profiles defaulting."""
     if active_profiles == None:
         active_profiles = _active_profiles
     return dependency_graph.flatten(root, cli_plugins, util, profiles, active_profiles, seen_names)
 
-def _collect_wire_when_rules(loaded_deps, cc=None):
-    """Wrapper for tests - maintains old signature."""
-    return wiring.collect_rules(loaded_deps, cc=cc)
-
-def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names):
-    """Wrapper for tests - maintains old signature."""
-    return wiring.apply_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names, util)
-
 def cc_test_exports():
-    """Returns internal functions for testing."""
+    """
+    Returns internal functions for testing.
+
+    Uses inline lambdas to inject module dependencies (util, profiles) so tests
+    can call functions with simplified signatures. Only _flatten_dependency_tree
+    needs a named function due to conditional logic for active_profiles default.
+    """
     return {
         'deep_merge': util.deep_merge,
         'deep_copy': util.deep_copy,
-        'collect_wire_when_rules': _collect_wire_when_rules,
-        'apply_wire_when_rules': _apply_wire_when_rules,
+        # Inline wrappers inject dependencies for clean test signatures
+        'collect_wire_when_rules': lambda loaded_deps, cc=None: wiring.collect_rules(loaded_deps, cc=cc),
+        'apply_wire_when_rules': lambda compose_yaml, dep_name, wire_when_rules, loaded_dep_names: wiring.apply_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names, util),
         'is_url': util.is_url,
         'resolve_plugin_spec': _resolve_plugin_spec,
-        'struct_to_dict': _struct_to_dict,
-        'apply_modifications': _apply_modifications,
+        'struct_to_dict': lambda dep_struct: dependency_graph.struct_to_dict(dep_struct, util),
+        'apply_modifications': lambda dependencies, modifications: dependency_graph.apply_modifications(dependencies, modifications, util),
         'add_target_wrapper': _add_target_wrapper,
         'flatten_dependency_tree': _flatten_dependency_tree,
         'is_dep_included_by_profile': profiles.is_included,
