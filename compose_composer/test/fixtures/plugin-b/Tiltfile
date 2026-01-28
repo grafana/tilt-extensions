@@ -1,0 +1,34 @@
+# plugin-b: Composable with wire-when rules that trigger on plugin-a
+
+def get_wire_when(cc=None):
+    """Wire plugin-b to plugin-a when plugin-a is present."""
+    return {
+        'plugin-a': {
+            'services': {
+                'service-b': {
+                    'depends_on': ['service-a'],
+                    'volumes': ['data-volume:/data'],
+                    'environment': {
+                        'CONNECTED_TO': 'plugin-a',
+                    },
+                },
+            },
+        },
+    }
+
+def cc_export(cc=None):
+    """Export plugin-b as a composable."""
+    return struct(
+        name='plugin-b',
+        compose_path=__file__.replace('/Tiltfile', '') + '/docker-compose.yaml',
+        plugin_dir=__file__.replace('/Tiltfile', ''),
+        dependencies=[],
+        profiles=[],
+        labels=['test-plugin-b'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={'cc_export': cc_export, 'get_wire_when': get_wire_when},
+        _is_local=False,
+        _from_cli=False,
+    )

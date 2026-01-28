@@ -1,0 +1,18 @@
+# plugin-a: Simple composable with no dependencies
+
+def cc_export(cc=None):
+    """Export plugin-a as a composable."""
+    return struct(
+        name='plugin-a',
+        compose_path=__file__.replace('/Tiltfile', '') + '/docker-compose.yaml',
+        plugin_dir=__file__.replace('/Tiltfile', ''),
+        dependencies=[],
+        profiles=[],
+        labels=['test-plugin-a'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={'cc_export': cc_export},
+        _is_local=False,
+        _from_cli=False,
+    )

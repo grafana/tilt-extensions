@@ -1,0 +1,8 @@
+services:
+  service-a:
+    image: alpine:latest
+    command: sleep infinity
+    environment:
+      PLUGIN: plugin-a
+    labels:
+      - "test=plugin-a"

@@ -16,6 +16,55 @@ compose_composer is a Tilt extension (~1900 lines of Starlark) that enables dyna
 
 ## Architecture
 
+The codebase is organized into a modular structure:
+
+```
+compose_composer/
+├── Tiltfile                    # Main orchestration (~1,510 lines)
+└── lib/
+    ├── utils.tilt              # Pure utility functions (330 lines)
+    ├── profiles.tilt           # Profile activation/filtering (105 lines)
+    ├── dependency_graph.tilt   # Graph traversal (233 lines)
+    └── wiring.tilt             # Declarative wiring (297 lines)
+```
+
+### Module Design Patterns
+
+**Struct Namespace Pattern**: All modules export a single struct to provide namespace-like access:
+```python
+load('./lib/utils.tilt', 'util')
+result = util.deep_merge(base, override)  # Clean namespace syntax
+```
+
+**Dependency Injection**: Modules receive dependencies as parameters rather than loading them directly:
+```python
+dependency_graph.flatten(root, cli_plugins, util, profiles, active_profiles)
+```
+
+This avoids circular dependencies and keeps modules decoupled.
+
+### Library Modules
+
+**lib/utils.tilt** - Pure utility functions with no external dependencies:
+- `util.deep_merge()` - Deep merge with list concatenation and special env var handling
+- `util.is_url()` - URL detection for git@ and :// patterns
+- `util.parse_url_with_ref()` - Parse composable URLs with optional @ref
+- `util.is_named_volume()` - Detect Docker named volumes vs bind mounts
+- `util.should_concatenate_string()` - Determine if env vars should concatenate
+
+**lib/profiles.tilt** - Profile management:
+- `profiles.get_active()` - Get active profiles from CLI args or CC_PROFILES env var
+- `profiles.is_included()` - Check if dependency matches active profiles
+
+**lib/dependency_graph.tilt** - Dependency tree operations:
+- `dependency_graph.struct_to_dict()` - Convert plugin structs to dicts
+- `dependency_graph.flatten()` - Depth-first tree flattening with deduplication
+- `dependency_graph.apply_modifications()` - Apply cross-plugin compose_overrides
+
+**lib/wiring.tilt** - Declarative wiring (wire-when) system:
+- `wiring.collect_rules()` - Collect get_wire_when() exports from all plugins
+- `wiring.apply_rules()` - Apply wiring rules when trigger dependencies are present
+
 ### Key Functions (Tiltfile)
 
 - `cc_import(name, ...)` - Load a remote composable and return a plugin struct (URL defaults to `COMPOSABLES_URL` env var or `https://github.com/grafana/composables@main`)
@@ -70,6 +119,29 @@ Tests are in `test/Tiltfile` using a custom test framework with `assert_equals()
 
 ## Development Patterns
 
+### Working with Modules
+
+**When adding utilities:**
+- Add to `lib/utils.tilt` if it's a pure function with no external dependencies
+- Export via the `util` struct: `util = struct(..., new_func = _new_func)`
+- Follow the underscore prefix pattern for private functions
+
+**When adding profile logic:**
+- Add to `lib/profiles.tilt` if it relates to profile activation or filtering
+- Export via the `profiles` struct
+
+**When modifying dependency graph:**
+- Edit `lib/dependency_graph.tilt` for tree traversal or struct conversion logic
+- Remember to use dependency injection for util and profiles modules
+
+**When modifying wiring:**
+- Edit `lib/wiring.tilt` for wire-when rule collection or application
+- Uses dependency injection for util module
+
+**Test compatibility:**
+- Test wrapper functions in main Tiltfile maintain old signatures for backward compatibility
+- Don't modify test wrapper functions unless test signatures need to change
+
 ### Adding New Features
 
 1. Implement in main `Tiltfile`
@@ -104,9 +176,14 @@ Optional exports:
 
 ## Key Files
 
-- `Tiltfile` - Main extension implementation
-- `test/Tiltfile` - Test suite
+- `Tiltfile` - Main extension implementation and public API (~1,510 lines)
+- `lib/utils.tilt` - Utility functions (deep merge, URL parsing, volume utilities)
+- `lib/profiles.tilt` - Profile activation and filtering logic
+- `lib/dependency_graph.tilt` - Dependency tree traversal and struct conversion
+- `lib/wiring.tilt` - Declarative wiring system (wire-when rules)
+- `test/Tiltfile` - Test suite (122 unit tests + 12 integration tests)
 - `docs/README.md` - User documentation
+- `REFACTORING_SUMMARY.md` - Documentation of modular refactoring (Phases 1-5)
 - `future-investigations/` - Design documents for future features
 
 ## Environment Variables
@@ -125,3 +202,6 @@ This is Starlark code, not Python. Key differences:
 - No `try/except`, use validation with `fail()`
 - `hasattr()` for struct field checking
 - YAML round-trip for deep copy: `decode_yaml(encode_yaml(obj))`
+- **Cannot export underscore-prefixed names**: Use struct pattern to export private functions
+- **Cannot load() in functions**: Use dependency injection to pass modules as parameters
+- **Module pattern**: Export single struct with all public functions for namespace syntax

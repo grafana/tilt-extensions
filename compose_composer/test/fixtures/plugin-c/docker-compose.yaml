@@ -1,0 +1,18 @@
+services:
+  service-c:
+    image: alpine:latest
+    command: sleep infinity
+    environment:
+      PLUGIN: plugin-c
+    labels:
+      - "test=plugin-c"
+    profiles:
+      - dev
+      - full
+
+  service-c-prod:
+    image: alpine:latest
+    command: sleep infinity
+    environment:
+      PLUGIN: plugin-c
+      ENV: production

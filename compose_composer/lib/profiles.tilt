@@ -1,0 +1,102 @@
+# Profile Management Utilities for compose_composer
+#
+# This module provides profile filtering functionality following Docker Compose's
+# profile model:
+#
+# - Dependencies with no profiles are always included
+# - Dependencies with profiles are included only if at least one profile is active
+# - Profiles can be activated via CLI flags (--profile=X) or CC_PROFILES env var
+#
+# All functions are prefixed with underscore to indicate internal use only.
+
+# ============================================================================
+# Profile Activation
+# ============================================================================
+
+def _get_active_from_config(cfg):
+    """
+    Get list of active profiles from CLI args and environment variable.
+
+    Priority: CLI --profile flags take precedence over CC_PROFILES env var.
+
+    Args:
+        cfg: Parsed config from config.parse() containing CLI arguments
+
+    Returns:
+        List of active profile names (may be empty)
+
+    Example:
+        _cfg = config.parse()
+        active = _get_active_from_config(_cfg)
+        # active = ['dev', 'debug'] or []
+    """
+    # CLI profiles from --profile=X flags
+    cli_profiles = cfg.get('profile', [])
+
+    if cli_profiles:
+        return cli_profiles
+
+    # Fall back to CC_PROFILES environment variable
+    env_profiles = os.environ.get('CC_PROFILES', '')
+    if env_profiles:
+        return [p.strip() for p in env_profiles.split(',') if p.strip()]
+
+    return []
+
+# ============================================================================
+# Profile Filtering
+# ============================================================================
+
+def _is_included(dep_profiles, active_profiles):
+    """
+    Check if a dependency should be included based on profiles.
+
+    Args:
+        dep_profiles: List of profiles the dependency belongs to
+        active_profiles: List of currently active profiles
+
+    Returns:
+        True if dependency should be included, False otherwise
+
+    Rules (following Docker Compose model):
+        - If dep has no profiles (empty list): always included
+        - If dep has profiles: included only if at least one matches active profiles
+
+    Example:
+        # No profiles = always included
+        _is_included([], ['dev'])  # True
+        _is_included([], [])       # True
+
+        # Has profiles = needs match
+        _is_included(['dev'], ['dev', 'test'])  # True (match)
+        _is_included(['dev'], ['prod'])         # False (no match)
+        _is_included(['dev'], [])               # False (no active)
+    """
+    # No profiles = always included (Docker Compose default behavior)
+    if not dep_profiles:
+        return True
+
+    # If no profiles are active, only include deps without profiles
+    if not active_profiles:
+        return False
+
+    # Check for intersection between dep profiles and active profiles
+    for p in dep_profiles:
+        if p in active_profiles:
+            return True
+
+    return False
+
+# ============================================================================
+# Public API - Export as struct for namespace-like access
+# ============================================================================
+
+# Export profile utilities as a struct to enable profiles.get_active() syntax
+# This is the standard Starlark pattern for creating namespaces
+profiles = struct(
+    # Profile activation
+    get_active = _get_active_from_config,
+
+    # Profile filtering
+    is_included = _is_included,
+)

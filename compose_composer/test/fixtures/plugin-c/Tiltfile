@@ -1,0 +1,18 @@
+# plugin-c: Composable with profile-based services
+
+def cc_export(cc=None):
+    """Export plugin-c as a composable with profiles."""
+    return struct(
+        name='plugin-c',
+        compose_path=__file__.replace('/Tiltfile', '') + '/docker-compose.yaml',
+        plugin_dir=__file__.replace('/Tiltfile', ''),
+        dependencies=[],
+        profiles=['dev', 'full'],  # Only loaded in dev or full profiles
+        labels=['test-plugin-c'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={'cc_export': cc_export},
+        _is_local=False,
+        _from_cli=False,
+    )

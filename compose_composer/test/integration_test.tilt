@@ -1,0 +1,842 @@
+# Integration Tests for compose_composer
+# These tests exercise the full public API and orchestration pipeline
+# Run with: make test (from parent directory)
+
+load('../Tiltfile', 'cc_init')
+
+# Test helper for assertions
+def assert_equals(actual, expected, msg=""):
+    """Assert that actual equals expected."""
+    if actual != expected:
+        fail_msg = "Expected '{}', got '{}'".format(expected, actual)
+        if msg:
+            fail_msg = msg + ": " + fail_msg
+        fail(fail_msg)
+
+def assert_true(condition, msg=""):
+    """Assert that condition is true."""
+    if not condition:
+        fail(msg if msg else "Assertion failed")
+
+def assert_in(item, collection, msg=""):
+    """Assert that item is in collection."""
+    if item not in collection:
+        fail_msg = "'{}' not in '{}'".format(item, collection)
+        if msg:
+            fail_msg = msg + ": " + fail_msg
+        fail(fail_msg)
+
+def assert_not_in(item, collection, msg=""):
+    """Assert that item is not in collection."""
+    if item in collection:
+        fail_msg = "'{}' should not be in '{}'".format(item, collection)
+        if msg:
+            fail_msg = msg + ": " + fail_msg
+        fail(fail_msg)
+
+# ============================================================================
+# Integration Test: Simple Orchestration
+# ============================================================================
+
+def test_integration_simple_orchestration():
+    """
+    Test basic orchestration with local plugin and no dependencies.
+
+    Validates:
+    - cc_init() initializes context
+    - cc.create() creates valid plugin struct
+    - cc.generate_master_compose() produces master compose
+    - Output has correct structure (include list)
+    """
+    # Initialize compose_composer
+    cc = cc_init(
+        name='test-simple',
+        staging_dir='/tmp/cc-integration-test-simple',
+    )
+
+    # Create a simple local plugin using fluent API
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+    )
+
+    # Generate master compose using bound method
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Validate structure
+    assert_true(type(master) == 'dict', "Master should be a dict")
+    assert_in('include', master, "Master should have include key")
+    assert_true(type(master['include']) == 'list', "Include should be a list")
+    assert_equals(len(master['include']), 1, "Should have 1 include entry")
+
+    # Validate metadata
+    assert_in('_service_to_labels', master, "Should have service label mapping")
+    assert_in('_service_to_resource_deps', master, "Should have service resource deps mapping")
+
+    # Verify context was used
+    assert_equals(cc.name, 'test-simple', "Context should have correct project name")
+
+    print("  [PASS] test_integration_simple_orchestration")
+
+# ============================================================================
+# Integration Test: Dependency Loading
+# ============================================================================
+
+def test_integration_load_dependencies():
+    """
+    Test loading composables as dependencies.
+
+    Validates:
+    - Dependencies are created via cc.create()
+    - Dependency tree is flattened correctly
+    - All services appear in output with correct labels
+    """
+    # Initialize with fluent API
+    cc = cc_init(
+        name='test-deps',
+        staging_dir='/tmp/cc-integration-test-deps',
+    )
+
+    # Create dependencies using cc.create()
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+        labels=['dep-a'],
+    )
+
+    plugin_b = cc.create(
+        'plugin-b',
+        os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+        labels=['dep-b'],
+    )
+
+    # Create orchestrator with dependencies
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+        plugin_b,
+        labels=['main'],
+    )
+
+    # Generate master compose
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Validate dependencies are included
+    assert_equals(len(master['include']), 3, "Should have 3 compose files (2 deps + orchestrator)")
+
+    # Validate service labels
+    assert_in('service-a', master['_service_to_labels'], "service-a should be in label mapping")
+    assert_in('service-b', master['_service_to_labels'], "service-b should be in label mapping")
+    assert_in('orchestrator', master['_service_to_labels'], "orchestrator should be in label mapping")
+
+    assert_equals(master['_service_to_labels']['service-a'], ['dep-a'], "service-a should have dep-a label")
+    assert_equals(master['_service_to_labels']['service-b'], ['dep-b'], "service-b should have dep-b label")
+    assert_equals(master['_service_to_labels']['orchestrator'], ['main'], "orchestrator should have main label")
+
+    print("  [PASS] test_integration_load_dependencies")
+
+# ============================================================================
+# Integration Test: Composables Registry
+# ============================================================================
+
+def test_integration_composables_registry():
+    """
+    Test that cc.composables() tracks all loaded composables.
+
+    Validates:
+    - cc.create() registers composables in cc.composables()
+    - Composables are keyed by name
+    - Can retrieve composables via cc.get_composable()
+    """
+    cc = cc_init(
+        name='test-registry',
+        staging_dir='/tmp/cc-integration-test-registry',
+    )
+
+    # Create multiple composables
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    plugin_b = cc.create(
+        'plugin-b',
+        os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+    )
+
+    # Check composables registry
+    composables = cc.composables()
+    assert_true(type(composables) == 'dict', "composables() should return a dict")
+    assert_in('plugin-a', composables, "plugin-a should be registered")
+    assert_in('plugin-b', composables, "plugin-b should be registered")
+
+    # Verify we can retrieve composables
+    retrieved_a = cc.get_composable('plugin-a')
+    assert_equals(retrieved_a.name, 'plugin-a', "Retrieved composable should match")
+
+    print("  [PASS] test_integration_composables_registry")
+
+# ============================================================================
+# Integration Test: Wire-When Rules Application
+# ============================================================================
+
+def test_integration_wire_when_rules():
+    """
+    Test that wire-when rules are correctly applied during composition.
+
+    Validates:
+    - get_wire_when() rules are collected
+    - Rules are applied when trigger dependency is present
+    - Compose files are modified and staged
+    - Dependencies, volumes, and environment are wired correctly
+    """
+    cc = cc_init(
+        name='test-wire',
+        staging_dir='/tmp/cc-integration-test-wire',
+    )
+
+    # Create plugin-a (trigger)
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    # Create plugin-b with wire-when rules
+    plugin_b_dir = os.path.abspath('fixtures/plugin-b')
+
+    # Define wire-when function
+    def get_wire_when(cc=None):
+        return {
+            'plugin-a': {
+                'services': {
+                    'service-b': {
+                        'depends_on': ['service-a'],
+                        'volumes': ['data-volume:/data'],
+                        'environment': {
+                            'CONNECTED_TO': 'plugin-a',
+                        },
+                    },
+                },
+            },
+        }
+
+    # Manually create plugin-b struct with wire-when (simulating cc_import)
+    plugin_b = struct(
+        name='plugin-b',
+        compose_path=plugin_b_dir + '/docker-compose.yaml',
+        plugin_dir=plugin_b_dir,
+        dependencies=[],
+        profiles=[],
+        labels=['dep-b'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={'get_wire_when': get_wire_when},
+        _is_local=True,
+        _from_cli=False,
+    )
+
+    # Register in composables
+    cc.composables()['plugin-b'] = plugin_b
+
+    # Create orchestrator with both dependencies
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+        plugin_b,
+    )
+
+    # Generate master compose
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Validate that plugin-b was modified (staged)
+    staged_b_path = cc.staging_dir + '/plugin-b.yaml'
+
+    # Read the staged file to verify wiring was applied
+    staged_content = read_yaml(staged_b_path)
+
+    assert_in('services', staged_content, "Staged compose should have services")
+    assert_in('service-b', staged_content['services'], "Should have service-b")
+
+    service_b = staged_content['services']['service-b']
+
+    # Verify wire-when modifications were applied
+    assert_in('depends_on', service_b, "service-b should have depends_on")
+    assert_in('service-a', service_b['depends_on'], "service-b should depend on service-a")
+
+    assert_in('volumes', service_b, "service-b should have volumes")
+    volume_found = False
+    for vol in service_b['volumes']:
+        if 'data-volume:/data' in str(vol):
+            volume_found = True
+    assert_true(volume_found, "service-b should have data-volume mount")
+
+    assert_in('environment', service_b, "service-b should have environment")
+    assert_in('CONNECTED_TO', service_b['environment'], "service-b should have CONNECTED_TO env var")
+
+    # Verify top-level volumes were created
+    assert_in('volumes', staged_content, "Staged compose should have top-level volumes")
+    assert_in('data-volume', staged_content['volumes'], "Should have data-volume declared")
+
+    print("  [PASS] test_integration_wire_when_rules")
+
+# ============================================================================
+# Integration Test: Dependency Inference via cc.composables()
+# ============================================================================
+
+def test_integration_dependency_inference():
+    """
+    Test that dependencies can be inferred from cc.composables().
+
+    When cc.create() is called with no explicit dependencies and cc context,
+    it should infer dependencies from all loaded composables.
+
+    Validates:
+    - cc.create() with no deps infers from cc.composables()
+    - All previously loaded composables become dependencies
+    """
+    cc = cc_init(
+        name='test-inference',
+        staging_dir='/tmp/cc-integration-test-inference',
+    )
+
+    # Create composables that will be auto-included
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+        labels=['auto-dep-a'],
+    )
+
+    plugin_b = cc.create(
+        'plugin-b',
+        os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+        labels=['auto-dep-b'],
+    )
+
+    # Create orchestrator WITHOUT explicit dependencies
+    # It should infer plugin-a and plugin-b from cc.composables()
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        # No explicit dependencies - should infer from cc.composables()
+        labels=['main'],
+    )
+
+    # Verify dependencies were inferred
+    assert_equals(len(orchestrator.dependencies), 2, "Should infer 2 dependencies from composables")
+    dep_names = [d.name for d in orchestrator.dependencies]
+    assert_in('plugin-a', dep_names, "Should include plugin-a")
+    assert_in('plugin-b', dep_names, "Should include plugin-b")
+
+    # Generate master compose to verify it works end-to-end
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    assert_equals(len(master['include']), 3, "Should have all 3 plugins")
+
+    print("  [PASS] test_integration_dependency_inference")
+
+# ============================================================================
+# Integration Test: Profile Filtering
+# ============================================================================
+
+def test_integration_profile_filtering():
+    """
+    Test that profile filtering works during composition.
+
+    Note: Profiles are evaluated at Tiltfile load time (module-level), so we test
+    with the current active profiles. Unit tests already cover the filtering logic
+    thoroughly via _is_dep_included_by_profile.
+
+    Validates:
+    - Dependencies with profiles are filtered based on active profiles
+    - Dependencies without profiles are always included
+    """
+    cc = cc_init(
+        name='test-profiles',
+        staging_dir='/tmp/cc-integration-test-profile',
+    )
+
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    plugin_c = cc.create(
+        'plugin-c',
+        os.path.abspath('fixtures/plugin-c/docker-compose.yaml'),
+        profiles=['dev', 'full'],  # Will be filtered out if 'dev' or 'full' not active
+    )
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+        plugin_c,
+    )
+
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Verify composition succeeds with profile filtering
+    # The exact number of includes depends on whether 'dev' or 'full' is active
+    assert_true(len(master['include']) >= 2, "Should have at least 2 includes (plugin-a + orchestrator)")
+    assert_true(len(master['include']) <= 3, "Should have at most 3 includes (+ plugin-c if profile active)")
+
+    # plugin-a should always be included (no profile requirement)
+    plugin_a_found = False
+    for entry in master['include']:
+        path = entry if type(entry) == 'string' else entry.get('path', '')
+        if 'plugin-a' in path:
+            plugin_a_found = True
+            break
+
+    assert_true(plugin_a_found, "plugin-a (no profiles) should always be included")
+
+    # Verify active profiles can be queried
+    active_profiles = cc.get_active_profiles()
+    assert_true(type(active_profiles) == 'list', "get_active_profiles() should return a list")
+
+    print("  [PASS] test_integration_profile_filtering")
+
+# ============================================================================
+# Integration Test: Modifications System
+# ============================================================================
+
+def test_integration_modifications_applied():
+    """
+    Test that modifications are correctly applied to dependencies.
+
+    Validates:
+    - compose_overrides parameter is applied
+    - Multiple modifications to same target are merged
+    - Deep merge semantics work correctly
+    """
+    cc = cc_init(
+        name='test-mods',
+        staging_dir='/tmp/cc-integration-test-mods',
+    )
+
+    # Create plugin with compose_overrides
+    plugin_a = struct(
+        name='plugin-a',
+        compose_path=os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+        plugin_dir=os.path.abspath('fixtures/plugin-a'),
+        dependencies=[],
+        profiles=[],
+        labels=[],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={
+            'services': {
+                'service-a': {
+                    'environment': {
+                        'OVERRIDE_KEY': 'override_value',
+                    },
+                },
+            },
+        },
+        _symbols={},
+        _is_local=True,
+        _from_cli=False,
+    )
+
+    # Register in composables
+    cc.composables()['plugin-a'] = plugin_a
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+    )
+
+    # Generate master compose
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Read staged plugin-a file
+    staged_a_path = cc.staging_dir + '/plugin-a.yaml'
+    staged_content = read_yaml(staged_a_path)
+
+    # Verify override was applied
+    service_a = staged_content['services']['service-a']
+    assert_in('OVERRIDE_KEY', service_a['environment'], "Override should be applied")
+    assert_equals(
+        service_a['environment']['OVERRIDE_KEY'],
+        'override_value',
+        "Override value should match"
+    )
+
+    # Original environment should still be present (deep merge)
+    assert_in('PLUGIN', service_a['environment'], "Original env vars should be preserved")
+
+    print("  [PASS] test_integration_modifications_applied")
+
+# ============================================================================
+# Integration Test: CLI Plugin Parsing
+# ============================================================================
+
+def test_integration_cli_plugins():
+    """
+    Test parsing CLI plugins and including them in composition.
+
+    Note: This test simulates CLI plugin behavior without actually
+    parsing command line args, since we're in a test environment.
+
+    Validates:
+    - CLI plugins can be added to composition
+    - CLI plugins are treated as top-level (not nested dependencies)
+    - CLI plugins appear in final output
+    """
+    cc = cc_init(
+        name='test-cli',
+        staging_dir='/tmp/cc-integration-test-cli',
+    )
+
+    # Create main orchestrator
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+    )
+
+    # Simulate CLI plugin (would normally come from cc.parse_cli_plugins())
+    cli_plugin = struct(
+        name='plugin-b',
+        compose_path=os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+        plugin_dir=os.path.abspath('fixtures/plugin-b'),
+        dependencies=[],
+        profiles=[],
+        labels=['cli-plugin'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={},
+        _is_local=True,
+        _from_cli=True,
+    )
+
+    # Generate with CLI plugin
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[cli_plugin],
+    )
+
+    # Should have orchestrator + plugin-a + plugin-b (CLI)
+    assert_equals(len(master['include']), 3, "Should include CLI plugin")
+
+    # Verify CLI plugin's services are labeled
+    assert_in('service-b', master['_service_to_labels'], "CLI plugin services should be labeled")
+    assert_equals(
+        master['_service_to_labels']['service-b'],
+        ['cli-plugin'],
+        "CLI plugin should have correct label"
+    )
+
+    print("  [PASS] test_integration_cli_plugins")
+
+# ============================================================================
+# Integration Test: Master Compose File Generation
+# ============================================================================
+
+def test_integration_master_compose_file_written():
+    """
+    Test that master-compose.yaml is written to staging directory.
+
+    Validates:
+    - Master compose file is created
+    - File contains valid YAML
+    - Internal metadata keys are stripped from written file
+    - Staging directory from cc_init is used
+    """
+    cc = cc_init(
+        name='test-master-file',
+        staging_dir='/tmp/cc-integration-test-master-file',
+    )
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+    )
+
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Check that master-compose.yaml was written to cc.staging_dir
+    master_file_path = cc.staging_dir + '/master-compose.yaml'
+
+    # Read the written file
+    written_content = read_yaml(master_file_path)
+
+    # Validate structure
+    assert_in('include', written_content, "Written file should have include")
+
+    # Validate internal keys are stripped
+    assert_not_in('_service_to_labels', written_content, "Internal keys should be stripped")
+    assert_not_in('_service_to_resource_deps', written_content, "Internal keys should be stripped")
+    assert_not_in('_dependencies', written_content, "Internal keys should be stripped")
+    assert_not_in('_staging_dir', written_content, "Internal keys should be stripped")
+
+    # Verify staging_dir from context was used
+    assert_equals(master['_staging_dir'], cc.staging_dir, "Should use staging_dir from cc context")
+
+    print("  [PASS] test_integration_master_compose_file_written")
+
+# ============================================================================
+# Integration Test: Resource Dependencies
+# ============================================================================
+
+def test_integration_resource_deps():
+    """
+    Test that resource_deps are correctly propagated to services.
+
+    Validates:
+    - Dependencies with resource_deps create service-to-resource_deps mapping
+    - Multiple resource_deps are preserved
+    """
+    cc = cc_init(
+        name='test-resource-deps',
+        staging_dir='/tmp/cc-integration-test-resource-deps',
+    )
+
+    plugin_a = struct(
+        name='plugin-a',
+        compose_path=os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+        plugin_dir=os.path.abspath('fixtures/plugin-a'),
+        dependencies=[],
+        profiles=[],
+        labels=[],
+        resource_deps=['build-task', 'another-task'],
+        modifications=lambda: [],
+        add_modification=lambda mod: None,
+        _compose_overrides_param={},
+        _symbols={},
+        _is_local=True,
+        _from_cli=False,
+    )
+
+    cc.composables()['plugin-a'] = plugin_a
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_a,
+    )
+
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Validate resource_deps mapping
+    assert_in('_service_to_resource_deps', master, "Should have resource deps mapping")
+    assert_in('service-a', master['_service_to_resource_deps'], "service-a should have resource deps")
+
+    service_a_deps = master['_service_to_resource_deps']['service-a']
+    assert_equals(len(service_a_deps), 2, "Should have 2 resource deps")
+    assert_in('build-task', service_a_deps, "Should include build-task")
+    assert_in('another-task', service_a_deps, "Should include another-task")
+
+    print("  [PASS] test_integration_resource_deps")
+
+# ============================================================================
+# Integration Test: Nested Dependencies
+# ============================================================================
+
+def test_integration_nested_dependencies():
+    """
+    Test that nested dependencies are correctly flattened.
+
+    Validates:
+    - Dependencies of dependencies are included
+    - Correct dependency order (dependencies before dependents)
+    - No duplicate dependencies
+    """
+    cc = cc_init(
+        name='test-nested',
+        staging_dir='/tmp/cc-integration-test-nested',
+    )
+
+    # Create a dependency chain: plugin-a <- plugin-b <- orchestrator
+    plugin_a = cc.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    plugin_b = cc.create(
+        'plugin-b',
+        os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+        plugin_a,  # plugin-b depends on plugin-a
+    )
+
+    orchestrator = cc.create(
+        'orchestrator',
+        os.path.abspath('fixtures/orchestrator/docker-compose.yaml'),
+        plugin_b,  # orchestrator depends on plugin-b
+    )
+
+    master = cc.generate_master_compose(
+        root_plugin=orchestrator,
+        cli_plugins=[],
+    )
+
+    # Should have all 3 in the composition
+    assert_equals(len(master['include']), 3, "Should include all nested dependencies")
+
+    # Verify order: dependencies should come before dependents
+    # Extract compose file names from include entries
+    include_list = master['include']
+    names_in_order = []
+    for entry in include_list:
+        if type(entry) == 'string':
+            # Extract plugin name from path
+            if 'plugin-a' in entry:
+                names_in_order.append('plugin-a')
+            elif 'plugin-b' in entry:
+                names_in_order.append('plugin-b')
+            elif 'orchestrator' in entry:
+                names_in_order.append('orchestrator')
+        else:
+            # entry is a dict with 'path' key
+            path = entry['path']
+            if 'plugin-a' in path:
+                names_in_order.append('plugin-a')
+            elif 'plugin-b' in path:
+                names_in_order.append('plugin-b')
+            elif 'orchestrator' in path:
+                names_in_order.append('orchestrator')
+
+    # plugin-a should come before plugin-b
+    a_idx = names_in_order.index('plugin-a')
+    b_idx = names_in_order.index('plugin-b')
+    orch_idx = names_in_order.index('orchestrator')
+
+    assert_true(a_idx < b_idx, "plugin-a should come before plugin-b")
+    assert_true(b_idx < orch_idx, "plugin-b should come before orchestrator")
+
+    print("  [PASS] test_integration_nested_dependencies")
+
+# ============================================================================
+# Integration Test: Context Independence
+# ============================================================================
+
+def test_integration_context_independence():
+    """
+    Test that multiple cc_init() contexts are independent.
+
+    Validates:
+    - Multiple contexts can coexist
+    - Each context has its own composables registry
+    - Contexts don't interfere with each other
+    """
+    # Create two independent contexts
+    cc1 = cc_init(
+        name='project-one',
+        staging_dir='/tmp/cc-integration-test-ctx1',
+    )
+
+    cc2 = cc_init(
+        name='project-two',
+        staging_dir='/tmp/cc-integration-test-ctx2',
+    )
+
+    # Create plugins in different contexts
+    plugin_a_cc1 = cc1.create(
+        'plugin-a',
+        os.path.abspath('fixtures/plugin-a/docker-compose.yaml'),
+    )
+
+    plugin_b_cc2 = cc2.create(
+        'plugin-b',
+        os.path.abspath('fixtures/plugin-b/docker-compose.yaml'),
+    )
+
+    # Verify contexts are independent
+    assert_equals(cc1.name, 'project-one', "cc1 should have correct name")
+    assert_equals(cc2.name, 'project-two', "cc2 should have correct name")
+
+    # Verify composables registries are independent
+    cc1_composables = cc1.composables()
+    cc2_composables = cc2.composables()
+
+    assert_in('plugin-a', cc1_composables, "cc1 should have plugin-a")
+    assert_not_in('plugin-b', cc1_composables, "cc1 should not have plugin-b")
+
+    assert_in('plugin-b', cc2_composables, "cc2 should have plugin-b")
+    assert_not_in('plugin-a', cc2_composables, "cc2 should not have plugin-a")
+
+    print("  [PASS] test_integration_context_independence")
+
+# ============================================================================
+# Run All Integration Tests
+# ============================================================================
+
+def run_integration_tests():
+    """Run all integration tests."""
+    print("\n" + "=" * 70)
+    print("INTEGRATION TESTS - Fluent API (cc_init)")
+    print("=" * 70)
+
+    print("\n=== Simple Orchestration ===")
+    test_integration_simple_orchestration()
+
+    print("\n=== Dependency Loading ===")
+    test_integration_load_dependencies()
+
+    print("\n=== Composables Registry ===")
+    test_integration_composables_registry()
+
+    print("\n=== Wire-When Rules ===")
+    test_integration_wire_when_rules()
+
+    print("\n=== Dependency Inference ===")
+    test_integration_dependency_inference()
+
+    print("\n=== Profile Filtering ===")
+    test_integration_profile_filtering()
+
+    print("\n=== Modifications System ===")
+    test_integration_modifications_applied()
+
+    print("\n=== CLI Plugins ===")
+    test_integration_cli_plugins()
+
+    print("\n=== Master Compose File ===")
+    test_integration_master_compose_file_written()
+
+    print("\n=== Resource Dependencies ===")
+    test_integration_resource_deps()
+
+    print("\n=== Nested Dependencies ===")
+    test_integration_nested_dependencies()
+
+    print("\n=== Context Independence ===")
+    test_integration_context_independence()
+
+    print("\n" + "=" * 70)
+    print("All integration tests passed!")
+    print("=" * 70)
