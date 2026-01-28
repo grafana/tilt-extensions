@@ -2,9 +2,12 @@
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
 
-load('../Tiltfile', 'cc_test_exports', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles', 'cc_init')
+# Only load public API (cc_init) and test exports function
+load('../Tiltfile', 'cc_test_exports', 'cc_init')
+load('./integration_test.tilt', 'run_integration_tests')
 
-# Get internal functions for testing
+# Get internal functions for testing via cc_test_exports()
+# This provides access to internal functions that aren't part of the public API
 _internals = cc_test_exports()
 deep_merge = _internals['deep_merge']
 deep_copy = _internals['deep_copy']
@@ -23,6 +26,13 @@ is_named_volume = _internals['is_named_volume']
 run_plugin_setup = _internals['run_plugin_setup']
 is_bindable_symbol = _internals['is_bindable_symbol']
 RESERVED_SYMBOLS = _internals['RESERVED_SYMBOLS']
+# Internal API functions (used by unit tests, production code uses cc_init() fluent API)
+cc_create = _internals['cc_create']
+cc_import = _internals['cc_import']
+cc_generate_master_compose = _internals['cc_generate_master_compose']
+cc_parse_cli_plugins = _internals['cc_parse_cli_plugins']
+cc_docker_compose = _internals['cc_docker_compose']
+cc_get_active_profiles = _internals['get_active_profiles']
 
 # ============================================================================
 # Test Helpers
@@ -437,7 +447,7 @@ def test_collect_wire_when_rules_single():
         }
     
     deps = [
-        {'name': 'grafana', 'symbols': {'get_wire_when': mock_wire_when}},
+        {'name': 'grafana', 'symbols': {'cc_wire_when': mock_wire_when}},
     ]
     result = collect_wire_when_rules(deps)
     assert_in('k3s-apiserver', result)
@@ -454,8 +464,8 @@ def test_collect_wire_when_rules_multiple():
         return {'k3s-apiserver': {'services': {'svc2': {}}}}
     
     deps = [
-        {'name': 'ext1', 'symbols': {'get_wire_when': wire_when_1}},
-        {'name': 'ext2', 'symbols': {'get_wire_when': wire_when_2}},
+        {'name': 'ext1', 'symbols': {'cc_wire_when': wire_when_1}},
+        {'name': 'ext2', 'symbols': {'cc_wire_when': wire_when_2}},
     ]
     result = collect_wire_when_rules(deps)
     assert_in('k3s-apiserver', result)
@@ -1453,10 +1463,10 @@ def test_resolve_plugin_spec_git_ssh():
 
 def test_collect_wire_when_rules_with_valid_dict():
     """Test that valid wire_when rules are collected."""
-    # Create mock dependencies with get_wire_when
+    # Create mock dependencies with cc_wire_when
     dep1 = struct_to_dict(cc_create('dep1', '/path/to/dep1.yaml'))
     dep1['symbols'] = {
-        'get_wire_when': lambda: {
+        'cc_wire_when': lambda: {
             'trigger': {
                 'services': {
                     'test': {
@@ -2342,11 +2352,14 @@ def run_tests():
     test_master_compose_preserves_other_top_level_keys()
 
     print("\n" + "=" * 50)
-    print("All tests passed!")
+    print("All unit tests passed!")
     print("=" * 50)
 
 # Run tests
 run_tests()
+
+# Run integration tests
+run_integration_tests()
 
 # Dummy resource to satisfy tilt ci (which expects at least one resource)
 local_resource('tests', cmd='echo "Tests completed"', auto_init=False)

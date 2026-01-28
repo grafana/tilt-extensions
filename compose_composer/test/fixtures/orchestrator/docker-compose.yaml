@@ -1,0 +1,6 @@
+services:
+  orchestrator:
+    image: alpine:latest
+    command: sleep infinity
+    environment:
+      ROLE: orchestrator

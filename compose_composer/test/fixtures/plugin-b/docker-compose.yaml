@@ -1,0 +1,11 @@
+services:
+  service-b:
+    image: alpine:latest
+    command: sleep infinity
+    environment:
+      PLUGIN: plugin-b
+    labels:
+      - "test=plugin-b"
+
+volumes:
+  data-volume:

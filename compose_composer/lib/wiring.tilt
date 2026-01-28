@@ -1,0 +1,304 @@
+# Wiring Utilities for compose_composer
+#
+# This module provides declarative wiring (wire_when) functionality:
+# - Collecting wiring rules from plugins via cc_wire_when() exports
+# - Applying rules to compose files when trigger dependencies are present
+#
+# Wire-when rules allow plugins to declaratively specify how they should
+# wire themselves when other dependencies are loaded, enabling symmetric
+# orchestration where any plugin can be the orchestrator.
+#
+# All functions are prefixed with underscore to indicate internal use only.
+
+# Must be loaded by caller
+# load('./lib/utils.tilt', 'util')
+
+# ============================================================================
+# Wire-When Rule Collection
+# ============================================================================
+
+def _collect_rules(loaded_deps, cc=None):
+    """
+    Collect wire_when rules from all loaded extensions.
+
+    Each plugin can export a cc_wire_when() function that returns rules
+    describing how to wire itself when specific trigger dependencies are present.
+
+    Args:
+        loaded_deps: List of loaded dependency dicts with 'symbols' field
+        cc: Orchestrator's cc struct to pass to cc_wire_when(cc) (optional)
+
+    Returns:
+        Dict mapping trigger_dep_name to list of rule sets:
+        {
+            'trigger-dep': [
+                {'source_dep': 'plugin-a', 'rules': {...}},
+                {'source_dep': 'plugin-b', 'rules': {...}},
+            ]
+        }
+
+    Example:
+        # Plugin A exports:
+        def cc_wire_when():
+            return {
+                'database': {  # When 'database' is loaded
+                    'services': {
+                        'app': {  # Wire 'app' service
+                            'depends_on': ['database'],
+                            'environment': {'DB_HOST': 'database'}
+                        }
+                    }
+                }
+            }
+    """
+    all_rules = {}
+
+    for dep in loaded_deps:
+        symbols = dep.get('symbols', {})
+        cc_wire_when = symbols.get('cc_wire_when')
+
+        if not cc_wire_when:
+            continue
+
+        # Call cc_wire_when() from the extension, passing cc for orchestrator context
+        if cc != None:
+            wire_when = cc_wire_when(cc)
+        else:
+            wire_when = cc_wire_when()
+
+        # Starlark: Type check before using as dict
+        if type(wire_when) != 'dict':
+            print("  Warning: " + dep['name'] + " cc_wire_when() returned non-dict, skipping")
+            continue
+
+        # Iterate over trigger dependencies
+        # Starlark: .items() is supported on dicts
+        for trigger_dep_name, rules in wire_when.items():
+            # Validate rules structure
+            if type(rules) != 'dict':
+                print("  Warning: wire_when rules for '" + trigger_dep_name + "' are not a dict, skipping")
+                continue
+
+            if trigger_dep_name not in all_rules:
+                all_rules[trigger_dep_name] = []
+
+            all_rules[trigger_dep_name].append({
+                'source_dep': dep['name'],
+                'rules': rules,
+            })
+
+    return all_rules
+
+# ============================================================================
+# Wire-When Rule Application
+# ============================================================================
+
+def _apply_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names, util):
+    """
+    Apply wire_when rules to a compose file.
+
+    Modifies compose_yaml in place by adding depends_on, volumes, environment,
+    and labels to services when trigger dependencies are present.
+
+    Args:
+        compose_yaml: The compose content to modify (dict)
+        dep_name: Name of the dependency being processed
+        wire_when_rules: All collected wire_when rules (from collect_rules)
+        loaded_dep_names: List of all loaded dependency names
+        util: Utility module for is_named_volume and should_concatenate_string
+
+    Returns:
+        Modified compose_yaml
+
+    Rules format:
+        {
+            'trigger-dep': [
+                {
+                    'source_dep': 'plugin-a',
+                    'rules': {
+                        'services': {
+                            'service-name': {
+                                'depends_on': ['dep1', 'dep2'],
+                                'volumes': ['vol:/path'],
+                                'environment': {'KEY': 'value'},
+                                'labels': {'label': 'value'}
+                            }
+                        }
+                    }
+                }
+            ]
+        }
+    """
+    modified = False
+
+    # Check each trigger dependency
+    for trigger_dep, rule_sets in wire_when_rules.items():
+        # Only apply if the trigger dependency is loaded
+        if trigger_dep not in loaded_dep_names:
+            continue
+
+        # Apply each rule set from extensions that defined rules for this trigger
+        for rule_set in rule_sets:
+            rules = rule_set['rules']
+            source = rule_set['source_dep']
+
+            # Get service rules
+            service_rules = rules.get('services', {})
+
+            for target_service, service_mods in service_rules.items():
+                # Only apply to services in this compose file
+                if target_service not in compose_yaml.get('services', {}):
+                    continue
+
+                svc = compose_yaml['services'][target_service]
+
+                # Apply depends_on
+                if 'depends_on' in service_mods:
+                    existing = svc.get('depends_on', [])
+                    if type(existing) == 'list':
+                        for dep in service_mods['depends_on']:
+                            if dep not in existing:
+                                existing.append(dep)
+                        svc['depends_on'] = existing
+                    else:
+                        # Dict format
+                        for dep in service_mods['depends_on']:
+                            if dep not in existing:
+                                existing[dep] = {'condition': 'service_started'}
+                        svc['depends_on'] = existing
+                    modified = True
+
+                # Apply volumes
+                if 'volumes' in service_mods:
+                    existing = svc.get('volumes', [])
+                    for vol in service_mods['volumes']:
+                        # Starlark: Parse volume spec properly: [source:]target[:mode]
+                        vol_parts = vol.split(':')
+                        # Starlark: List indexing with conditional (ternary-like with if/else)
+                        new_mount = vol_parts[1] if len(vol_parts) >= 2 else vol_parts[0]
+                        new_source = vol_parts[0] if len(vol_parts) >= 2 else None
+
+                        # Check for EXACT duplicate mount points (not substring match)
+                        already_mounted = False
+                        for existing_vol in existing:
+                            # Starlark: Convert to string for safety, then parse
+                            existing_parts = str(existing_vol).split(':')
+                            existing_mount = existing_parts[1] if len(existing_parts) >= 2 else existing_parts[0]
+
+                            # CRITICAL FIX: Use == for exact match, not 'in' for substring
+                            if existing_mount == new_mount:
+                                already_mounted = True
+                                break
+
+                        if not already_mounted:
+                            existing.append(vol)
+
+                        # Use helper for named volume detection (improved heuristic)
+                        if new_source and util.is_named_volume(new_source):
+                            # Ensure top-level volumes section exists
+                            if 'volumes' not in compose_yaml:
+                                compose_yaml['volumes'] = {}
+
+                            # Add named volume if not already declared
+                            if new_source not in compose_yaml['volumes']:
+                                # Starlark: None is supported for empty volume config
+                                compose_yaml['volumes'][new_source] = None
+
+                    svc['volumes'] = existing
+                    modified = True
+
+                # Apply environment
+                if 'environment' in service_mods:
+                    existing = svc.get('environment', {})
+                    # Starlark: Type check using string comparison
+                    if type(existing) == 'list':
+                        # Convert list format to dict
+                        env_dict = {}
+                        for e in existing:
+                            # Starlark: Convert to string for safety
+                            e_str = str(e)
+
+                            # Validate format: KEY=VALUE
+                            if '=' not in e_str:
+                                print("  [wire_when] Warning: skipping malformed environment entry '" + e_str + "' (missing '=')")
+                                continue
+
+                            # Starlark: split with maxsplit=1 to handle values with '='
+                            parts = e_str.split('=', 1)
+
+                            # Validate key is not empty
+                            if not parts[0]:
+                                print("  [wire_when] Warning: skipping entry with empty key")
+                                continue
+
+                            # Add to dict (empty value if no '=' found, though we checked above)
+                            env_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
+
+                        existing = env_dict
+                    for k, v in service_mods['environment'].items():
+                        # Check if this env var should be concatenated (like GF_FEATURE_TOGGLES_ENABLE)
+                        if k in existing and util.should_concatenate_string(k, str(existing[k]), str(v)):
+                            # Concatenate comma-separated values, avoiding duplicates
+                            base_items = str(existing[k]).split(',')
+                            override_items = str(v).split(',')
+                            combined = list(base_items)
+                            for item in override_items:
+                                if item and item not in combined:
+                                    combined.append(item)
+                            existing[k] = ','.join(combined)
+                        else:
+                            existing[k] = v
+                    svc['environment'] = existing
+                    modified = True
+
+                # Apply labels
+                if 'labels' in service_mods:
+                    existing = svc.get('labels', {})
+                    # Starlark: Type check using string comparison
+                    if type(existing) == 'list':
+                        # Convert list format to dict
+                        labels_dict = {}
+                        for label in existing:
+                            # Starlark: Convert to string for safety
+                            label_str = str(label)
+
+                            # Validate format: KEY=VALUE
+                            if '=' not in label_str:
+                                print("  [wire_when] Warning: skipping malformed label entry '" + label_str + "' (missing '=')")
+                                continue
+
+                            # Starlark: split with maxsplit=1 to handle values with '='
+                            parts = label_str.split('=', 1)
+
+                            # Validate key is not empty
+                            if not parts[0]:
+                                print("  [wire_when] Warning: skipping label with empty key")
+                                continue
+
+                            # Add to dict
+                            labels_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
+
+                        existing = labels_dict
+                    for k, v in service_mods['labels'].items():
+                        existing[k] = v
+                    svc['labels'] = existing
+                    modified = True
+
+                if modified:
+                    print("    [wire_when] " + source + " wired " + target_service + " for " + trigger_dep)
+
+    return compose_yaml
+
+# ============================================================================
+# Public API - Export as struct for namespace-like access
+# ============================================================================
+
+# Export wiring utilities as a struct to enable wiring.collect_rules() syntax
+# This is the standard Starlark pattern for creating namespaces
+wiring = struct(
+    # Rule collection
+    collect_rules = _collect_rules,
+
+    # Rule application
+    apply_rules = _apply_rules,
+)

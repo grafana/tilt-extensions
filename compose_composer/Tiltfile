@@ -5,7 +5,7 @@
 # Design Principle:
 #   Any plugin can be the orchestrator (composer). The result should be the same
 #   regardless of which plugin initiates the composition. This is achieved through:
-#   - Declarative wiring rules in extensions (get_wire_when)
+#   - Declarative wiring rules in extensions (cc_wire_when)
 #   - Dependency graphs that can be merged (get_dependency_graph)
 #   - compose_overrides that are deep-merged when dependencies overlap
 #
@@ -37,7 +37,17 @@
 #
 # Extension exports:
 #   cc_export() -> struct         - Returns plugin struct from cc_create (required)
-#   get_wire_when() -> dict           - Conditional wiring rules (optional)
+#   cc_wire_when() -> dict        - Conditional wiring rules (optional)
+
+# ============================================================================
+# Module Imports
+# ============================================================================
+
+# Load utility functions from lib/utils.tilt (using struct pattern for namespace)
+load('./lib/utils.tilt', 'util')
+load('./lib/profiles.tilt', 'profiles')
+load('./lib/dependency_graph.tilt', 'dependency_graph')
+load('./lib/wiring.tilt', 'wiring')
 
 # ============================================================================
 # CLI Argument Parsing
@@ -51,43 +61,22 @@ _cfg = config.parse()
 # Profile Management
 # ============================================================================
 
-def _get_active_profiles():
-    """
-    Get list of active profiles from CLI args and environment variable.
-    
-    Priority: CLI --profile flags take precedence over CC_PROFILES env var.
-    
-    Returns:
-        List of active profile names (may be empty)
-    """
-    # CLI profiles from --profile=X flags
-    cli_profiles = _cfg.get('profile', [])
-    
-    if cli_profiles:
-        return cli_profiles
-    
-    # Fall back to CC_PROFILES environment variable
-    env_profiles = os.environ.get('CC_PROFILES', '')
-    if env_profiles:
-        return [p.strip() for p in env_profiles.split(',') if p.strip()]
-    
-    return []
-
 # Module-level active profiles (computed once at load time)
-_active_profiles = _get_active_profiles()
+# Loaded from lib/profiles.tilt
+_active_profiles = profiles.get_active(_cfg)
 
 # Reserved symbols that are handled specially by compose_composer
 # and should not be auto-bound to plugin structs
 _RESERVED_SYMBOLS = [
     'cc_export',
-    'get_wire_when',
+    'cc_wire_when',
     'cc_setup',
     'process_accumulated_modifications',
 ]
 
-def cc_get_active_profiles():
+def _cc_get_active_profiles():
     """
-    Get the list of currently active profiles.
+    INTERNAL: Get the list of currently active profiles.
     
     Use this to pass profile flags to docker_compose() if needed.
     
@@ -147,13 +136,13 @@ def _run_plugin_setup(cc):
     else:
         print("  Completed setup for " + str(setup_count) + " plugin(s)")
 
-def cc_docker_compose(master_compose, project_name=None, **kwargs):
+def _cc_docker_compose(master_compose, project_name=None, **kwargs):
     """
-    Invoke docker_compose() with active profiles automatically set via environment
+    INTERNAL: Invoke docker_compose() with active profiles automatically set via environment
     and auto-register services with dc_resource().
 
     This is a convenience wrapper that:
-    1. Sets COMPOSE_PROFILES environment variable based on cc_get_active_profiles()
+    1. Sets COMPOSE_PROFILES environment variable based on _cc_get_active_profiles()
     2. Extracts service-to-labels mapping from master_compose dict
     3. Calls docker_compose() to load the compose configuration
     4. Automatically registers all services with dc_resource() using their labels
@@ -205,7 +194,7 @@ def cc_docker_compose(master_compose, project_name=None, **kwargs):
         # Skip plugin setup:
         # CC_SKIP_SETUP=1 tilt up
     """
-    active = cc_get_active_profiles()
+    active = _cc_get_active_profiles()
 
     # Set COMPOSE_PROFILES environment variable for docker-compose
     # This must be set in the process environment, not passed to docker_compose()
@@ -280,43 +269,16 @@ def cc_docker_compose(master_compose, project_name=None, **kwargs):
             else:
                 dc_resource(service_name, labels=labels)
 
-def _is_dep_included_by_profile(dep_profiles, active_profiles):
-    """
-    Check if a dependency should be included based on profiles.
-    
-    Args:
-        dep_profiles: List of profiles the dependency belongs to
-        active_profiles: List of currently active profiles
-    
-    Returns:
-        True if dependency should be included, False otherwise
-    
-    Rules (following Docker Compose model):
-        - If dep has no profiles (empty list): always included
-        - If dep has profiles: included only if at least one matches active profiles
-    """
-    # No profiles = always included (Docker Compose default behavior)
-    if not dep_profiles:
-        return True
-    
-    # If no profiles are active, only include deps without profiles
-    if not active_profiles:
-        return False
-    
-    # Check for intersection between dep profiles and active profiles
-    for p in dep_profiles:
-        if p in active_profiles:
-            return True
-    
-    return False
+# Profile filtering function loaded from lib/profiles.tilt
+# Use profiles.is_included(dep_profiles, active_profiles)
 
 # ============================================================================
 # Local Compose (Plugin Declaration)
 # ============================================================================
 
-def cc_create(name, compose_path, *dependencies, **kwargs):
+def _cc_create(name, compose_path, *dependencies, **kwargs):
     """
-    Declare a local plugin with its compose path and dependencies.
+    INTERNAL: Declare a local plugin with its compose path and dependencies.
 
     Every plugin should export a cc_export() function that returns
     a cc_create struct. This creates a uniform dependency tree model.
@@ -477,45 +439,7 @@ def cc_create(name, compose_path, *dependencies, **kwargs):
 # Dependency Struct (Remote Plugin Loading)
 # ============================================================================
 
-def _parse_url_with_ref(url):
-    """
-    Parse a URL with optional @ref suffix for git repositories.
-
-    Supports encoding git refs (branch, tag, or commit) directly in the URL
-    using @ separator, following Go modules convention.
-
-    Args:
-        url: URL string, optionally with @ref suffix
-
-    Returns:
-        Tuple of (url_without_ref, ref_or_none)
-
-    Examples:
-        'https://github.com/grafana/composables@v1.2.3'
-          -> ('https://github.com/grafana/composables', 'v1.2.3')
-
-        'https://github.com/grafana/composables@main'
-          -> ('https://github.com/grafana/composables', 'main')
-
-        'https://github.com/grafana/composables'
-          -> ('https://github.com/grafana/composables', None)
-
-        'file:///path/to/composables'
-          -> ('file:///path/to/composables', None)
-
-    Note: file:// URLs never have refs, so @ is never parsed for file URLs.
-    """
-    # file:// URLs don't support refs
-    if url.startswith('file://'):
-        return (url, None)
-
-    # Split on last @ to handle SSH URLs like git@github.com:user/repo@ref
-    if '@' in url:
-        parts = url.rsplit('@', 1)
-        if len(parts) == 2 and parts[1]:  # Ensure ref part is not empty
-            return (parts[0], parts[1])
-
-    return (url, None)
+# URL parsing utilities loaded from lib/utils.tilt
 
 def _is_bindable_symbol(name, value):
     """
@@ -560,7 +484,7 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
         url = os.environ.get('COMPOSABLES_URL', _DEFAULT_COMPOSABLES_URL)
 
     # Parse URL for embedded ref (url@ref syntax)
-    parsed_url, parsed_ref = _parse_url_with_ref(url)
+    parsed_url, parsed_ref = util.parse_url_with_ref(url)
 
     # Priority: explicit ref parameter > embedded in URL > None
     final_ref = ref
@@ -683,9 +607,9 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     return plugin
 
 
-def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
+def _cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
-    Declare a dependency on a remote plugin and load its extension.
+    INTERNAL: Declare a dependency on a remote plugin and load its extension.
 
     This function registers the extension with Tilt, loads its symbols,
     and returns a struct with bound helper functions.
@@ -843,9 +767,7 @@ def _compose_overrides_method(overrides):
 
     return overrides
 
-def _is_url(s):
-    """Check if string is a URL (git or https)."""
-    return '://' in s or s.startswith('git@')
+# is_url loaded from lib/utils.tilt
 
 def _resolve_plugin_spec(plugin, tiltfile_dir):
     """
@@ -863,7 +785,7 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         'https://github.com/org/repo@v1.0#path/to/plugin' -> repo_path='path/to/plugin'
     """
     # Git/HTTPS URLs
-    if _is_url(plugin):
+    if util.is_url(plugin):
         # Check for fragment specifying subdirectory (collection URL)
         # Format: https://github.com/org/composables#grafana -> repo_path='grafana'
         if '#' in plugin:
@@ -924,9 +846,9 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         '_from_cli': True,
     }
 
-def cc_parse_cli_plugins(tiltfile_dir=None, cc=None):
+def _cc_parse_cli_plugins(tiltfile_dir=None, cc=None):
     """
-    Parse CLI positional args and return list of dependency structs.
+    INTERNAL: Parse CLI positional args and return list of dependency structs.
 
     Each CLI plugin is loaded as a dependency struct, just like core dependencies.
     This provides a uniform interface for all dependencies.
@@ -1011,479 +933,15 @@ def _get_compose_path_from_dep(dep):
 
     return compose_path
 
-# ============================================================================
-# Deep Merge Utility
-# ============================================================================
-
-# Known environment variables that should concatenate instead of replace
-_CONCAT_ENV_VARS = [
-    'WEBHOOK_OPERATORS',  # Multiple webhook operators (op1:ns1,op2:ns2)
-    'API_GROUPS',          # For future use with API aggregation
-    'GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS',  # Comma-separated plugin IDs
-    'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
-]
-
-def _should_concatenate_string(key, base_val, override_val):
-    """
-    Check if this string should be concatenated rather than replaced.
-
-    Used for environment variables like WEBHOOK_OPERATORS where multiple
-    plugins may each contribute values that should be accumulated.
-
-    Returns True if values should be concatenated with comma separator.
-    """
-    # Only for string values (Starlark type() returns "string", not str)
-    if type(base_val) != 'string' or type(override_val) != 'string':
-        return False
-
-    # Check if key is in known concat list
-    if key in _CONCAT_ENV_VARS:
-        return True
-
-    # Exclude URLs from concatenation - they should be replaced, not concatenated
-    # Check for the :// pattern which is common to most URL schemes
-    # (http://, https://, file://, ftp://, jdbc://, etc.)
-    if '://' in base_val or '://' in override_val:
-        return False
-
-    # Heuristic: both contain colon-separated values (like "name:namespace")
-    # This catches similar patterns even if not explicitly listed
-    if ':' in base_val and ':' in override_val:
-        return True
-
-    return False
-
-def _deep_merge(base, override):
-    """
-    Deep merge override into base.
-    - Dicts are merged recursively
-    - Lists are concatenated (for volumes, depends_on, etc.)
-    - Comma-separated strings are concatenated (for WEBHOOK_OPERATORS, etc.)
-    - Other values are replaced
-
-    Returns a new dict (does not modify base).
-    """
-    if type(base) != 'dict' or type(override) != 'dict':
-        return override
-    
-    result = {}
-    
-    # Start with all keys from base
-    for key in base:
-        result[key] = base[key]
-    
-    # Merge/override with keys from override
-    for key in override:
-        if key in result:
-            base_type = type(result[key])
-            override_type = type(override[key])
-
-            if base_type == 'dict' and override_type == 'dict':
-                result[key] = _deep_merge(result[key], override[key])
-            elif base_type == 'list' and override_type == 'list':
-                # Concatenate lists, avoiding duplicates for simple values
-                merged = list(result[key])
-                for item in override[key]:
-                    if item not in merged:
-                        merged.append(item)
-                result[key] = merged
-            elif _should_concatenate_string(key, result[key], override[key]):
-                # Concatenate comma-separated strings (e.g., WEBHOOK_OPERATORS)
-                base_val = result[key]
-                override_val = override[key]
-                base_items = base_val.split(',') if base_val else []
-                override_items = override_val.split(',') if override_val else []
-
-                # Combine and deduplicate
-                combined = list(base_items)
-                for item in override_items:
-                    if item and item not in combined:
-                        combined.append(item)
-
-                result[key] = ','.join(combined)
-            else:
-                result[key] = override[key]
-        else:
-            result[key] = override[key]
-    
-    return result
-
-def _deep_copy(obj):
-    """
-    Create a deep copy of a dict/list structure using YAML round-trip.
-
-    Starlark note: This approach is intentional because:
-    1. Starlark has no native deep copy function
-    2. YAML round-trip preserves all compose-compatible types
-    3. Performance trade-off: correctness > speed for this use case
-    4. Alternative (recursive copy) would be complex and error-prone
-
-    This method ensures proper isolation between base and override dicts
-    during merge operations, preventing unintended mutations.
-    """
-    return decode_yaml(encode_yaml(obj))
+# Deep merge utilities loaded from lib/utils.tilt
 
 # ============================================================================
 # Declarative Wiring (wire_when)
 # ============================================================================
 
-def _collect_wire_when_rules(loaded_deps, cc=None):
-    """
-    Collect wire_when rules from all loaded extensions.
-
-    Args:
-        loaded_deps: List of loaded dependency dicts
-        cc: Orchestrator's cc struct to pass to get_wire_when(cc) (optional)
-
-    Returns a dict: {trigger_dep_name: [{source_dep, rules}, ...]}
-    """
-    all_rules = {}
-
-    for dep in loaded_deps:
-        symbols = dep.get('symbols', {})
-        get_wire_when = symbols.get('get_wire_when')
-
-        if not get_wire_when:
-            continue
-
-        # Call get_wire_when() from the extension, passing cc for orchestrator context
-        if cc != None:
-            wire_when = get_wire_when(cc)
-        else:
-            wire_when = get_wire_when()
-
-        # Starlark: Type check before using as dict
-        if type(wire_when) != 'dict':
-            print("  Warning: " + dep['name'] + " get_wire_when() returned non-dict, skipping")
-            continue
-
-        # Iterate over trigger dependencies
-        # Starlark: .items() is supported on dicts
-        for trigger_dep_name, rules in wire_when.items():
-            # Validate rules structure
-            if type(rules) != 'dict':
-                print("  Warning: wire_when rules for '" + trigger_dep_name + "' are not a dict, skipping")
-                continue
-
-            if trigger_dep_name not in all_rules:
-                all_rules[trigger_dep_name] = []
-
-            all_rules[trigger_dep_name].append({
-                'source_dep': dep['name'],
-                'rules': rules,
-            })
-    
-    return all_rules
-
-def _is_named_volume(vol_name):
-    """
-    Determine if volume source is a named volume vs bind mount.
-    Named volumes are Docker-managed; bind mounts are host paths.
-
-    Starlark: Uses string methods (startswith, in) which are fully supported.
-    """
-    if not vol_name:
-        return False
-
-    # Absolute unix paths (bind mount)
-    if vol_name.startswith('/'):
-        return False
-
-    # Relative paths (bind mount)
-    if vol_name.startswith('.'):
-        return False
-
-    # Windows paths: C:, D:, etc. (bind mount)
-    # Starlark: len() is supported
-    if len(vol_name) >= 2 and vol_name[1] == ':':
-        return False
-
-    # UNC paths: \\server\share (bind mount)
-    if vol_name.startswith('\\\\'):
-        return False
-
-    # Environment variables (dynamic bind mount)
-    if '${' in vol_name or '$(' in vol_name:
-        return False
-
-    # Tilde expansion (bind mount)
-    if vol_name.startswith('~'):
-        return False
-
-    # If none of the above, it's a named volume
-    return True
-
-def _parse_volume_mount(volume_spec):
-    """
-    Parse Docker volume mount: [source:]target[:mode]
-    Returns: {'source': str|None, 'target': str, 'mode': str|None}
-    """
-    if not volume_spec or type(volume_spec) != 'string':
-        return {'source': None, 'target': '', 'mode': None}
-
-    parts = volume_spec.split(':')
-
-    if len(parts) == 1:
-        return {'source': None, 'target': parts[0], 'mode': None}
-    elif len(parts) == 2:
-        # Disambiguate: if second part is ro/rw/z/Z, it's target:mode
-        if parts[1] in ['ro', 'rw', 'z', 'Z']:
-            return {'source': None, 'target': parts[0], 'mode': parts[1]}
-        else:
-            return {'source': parts[0], 'target': parts[1], 'mode': None}
-    else:
-        return {'source': parts[0], 'target': parts[1], 'mode': parts[2] if len(parts) > 2 else None}
-
-def _validate_volume_mounts(services_dict, plugin_name):
-    """
-    Validate no service has duplicate volume mounts to same target.
-    Fails with detailed error if conflicts detected.
-    """
-    for service_name, service_config in services_dict.items():
-        if type(service_config) != 'dict':
-            continue
-
-        volumes = service_config.get('volumes', [])
-        if not volumes:
-            continue
-
-        # Map target -> list of sources
-        target_to_sources = {}
-
-        for volume_spec in volumes:
-            parsed = _parse_volume_mount(str(volume_spec))
-            target = parsed['target']
-            source = parsed['source'] if parsed['source'] else '(container-only)'
-
-            if not target:
-                continue
-
-            if target not in target_to_sources:
-                target_to_sources[target] = []
-
-            target_to_sources[target].append({
-                'source': source,
-                'full_spec': str(volume_spec),
-            })
-
-        # Check for conflicts
-        for target, sources in target_to_sources.items():
-            if len(sources) > 1:
-                unique_sources = {}
-                for s in sources:
-                    unique_sources[s['source']] = s['full_spec']
-
-                if len(unique_sources) > 1:
-                    error_lines = [
-                        "",
-                        "=" * 70,
-                        "ERROR: Duplicate volume mount detected",
-                        "=" * 70,
-                        "",
-                        "Service: " + service_name,
-                        "Target path: " + target,
-                        "",
-                        "Conflicting sources:",
-                    ]
-
-                    for idx, (src, spec) in enumerate(unique_sources.items(), 1):
-                        error_lines.append("  " + str(idx) + ". " + src)
-                        error_lines.append("     Full spec: " + spec)
-
-                    error_lines.extend([
-                        "",
-                        "This indicates multiple plugins are trying to mount different",
-                        "sources to the same container path. Docker Compose behavior is",
-                        "undefined in this case.",
-                        "",
-                        "Common causes:",
-                        "  - Plugin registered in multiple places (orchestrator + self-registration)",
-                        "  - Two plugins both registering the same plugin ID",
-                        "  - Copy-paste error in Tiltfile",
-                        "",
-                        "Resolution:",
-                        "  - Ensure each plugin only registers itself once",
-                        "  - Use cc_import to load plugins, not manual registration",
-                        "  - Check for grafana.register_plugin() calls in multiple Tiltfiles",
-                        "",
-                        "Plugin being validated: " + plugin_name,
-                        "=" * 70,
-                    ])
-
-                    fail("\n".join(error_lines))
-
-def _apply_wire_when_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names):
-    """
-    Apply wire_when rules to a compose file.
-    
-    Args:
-        compose_yaml: The compose content to modify
-        dep_name: Name of the dependency being processed
-        wire_when_rules: All collected wire_when rules
-        loaded_dep_names: List of all loaded dependency names
-    
-    Returns:
-        Modified compose_yaml
-    """
-    modified = False
-    
-    # Check each trigger dependency
-    for trigger_dep, rule_sets in wire_when_rules.items():
-        # Only apply if the trigger dependency is loaded
-        if trigger_dep not in loaded_dep_names:
-            continue
-        
-        # Apply each rule set from extensions that defined rules for this trigger
-        for rule_set in rule_sets:
-            rules = rule_set['rules']
-            source = rule_set['source_dep']
-            
-            # Get service rules
-            service_rules = rules.get('services', {})
-            
-            for target_service, service_mods in service_rules.items():
-                # Only apply to services in this compose file
-                if target_service not in compose_yaml.get('services', {}):
-                    continue
-                
-                svc = compose_yaml['services'][target_service]
-                
-                # Apply depends_on
-                if 'depends_on' in service_mods:
-                    existing = svc.get('depends_on', [])
-                    if type(existing) == 'list':
-                        for dep in service_mods['depends_on']:
-                            if dep not in existing:
-                                existing.append(dep)
-                        svc['depends_on'] = existing
-                    else:
-                        # Dict format
-                        for dep in service_mods['depends_on']:
-                            if dep not in existing:
-                                existing[dep] = {'condition': 'service_started'}
-                        svc['depends_on'] = existing
-                    modified = True
-                
-                # Apply volumes
-                if 'volumes' in service_mods:
-                    existing = svc.get('volumes', [])
-                    for vol in service_mods['volumes']:
-                        # Starlark: Parse volume spec properly: [source:]target[:mode]
-                        vol_parts = vol.split(':')
-                        # Starlark: List indexing with conditional (ternary-like with if/else)
-                        new_mount = vol_parts[1] if len(vol_parts) >= 2 else vol_parts[0]
-                        new_source = vol_parts[0] if len(vol_parts) >= 2 else None
-
-                        # Check for EXACT duplicate mount points (not substring match)
-                        already_mounted = False
-                        for existing_vol in existing:
-                            # Starlark: Convert to string for safety, then parse
-                            existing_parts = str(existing_vol).split(':')
-                            existing_mount = existing_parts[1] if len(existing_parts) >= 2 else existing_parts[0]
-
-                            # CRITICAL FIX: Use == for exact match, not 'in' for substring
-                            if existing_mount == new_mount:
-                                already_mounted = True
-                                break
-
-                        if not already_mounted:
-                            existing.append(vol)
-
-                        # Use helper for named volume detection (improved heuristic)
-                        if new_source and _is_named_volume(new_source):
-                            # Ensure top-level volumes section exists
-                            if 'volumes' not in compose_yaml:
-                                compose_yaml['volumes'] = {}
-
-                            # Add named volume if not already declared
-                            if new_source not in compose_yaml['volumes']:
-                                # Starlark: None is supported for empty volume config
-                                compose_yaml['volumes'][new_source] = None
-                    
-                    svc['volumes'] = existing
-                    modified = True
-                
-                # Apply environment
-                if 'environment' in service_mods:
-                    existing = svc.get('environment', {})
-                    # Starlark: Type check using string comparison
-                    if type(existing) == 'list':
-                        # Convert list format to dict
-                        env_dict = {}
-                        for e in existing:
-                            # Starlark: Convert to string for safety
-                            e_str = str(e)
-
-                            # Validate format: KEY=VALUE
-                            if '=' not in e_str:
-                                print("  [wire_when] Warning: skipping malformed environment entry '" + e_str + "' (missing '=')")
-                                continue
-
-                            # Starlark: split with maxsplit=1 to handle values with '='
-                            parts = e_str.split('=', 1)
-
-                            # Validate key is not empty
-                            if not parts[0]:
-                                print("  [wire_when] Warning: skipping entry with empty key")
-                                continue
-
-                            # Add to dict (empty value if no '=' found, though we checked above)
-                            env_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
-
-                        existing = env_dict
-                    for k, v in service_mods['environment'].items():
-                        # Check if this env var should be concatenated (like GF_FEATURE_TOGGLES_ENABLE)
-                        if k in existing and _should_concatenate_string(k, str(existing[k]), str(v)):
-                            # Concatenate comma-separated values, avoiding duplicates
-                            base_items = str(existing[k]).split(',')
-                            override_items = str(v).split(',')
-                            combined = list(base_items)
-                            for item in override_items:
-                                if item and item not in combined:
-                                    combined.append(item)
-                            existing[k] = ','.join(combined)
-                        else:
-                            existing[k] = v
-                    svc['environment'] = existing
-                    modified = True
-                
-                # Apply labels
-                if 'labels' in service_mods:
-                    existing = svc.get('labels', {})
-                    # Starlark: Type check using string comparison
-                    if type(existing) == 'list':
-                        # Convert list format to dict
-                        labels_dict = {}
-                        for label in existing:
-                            # Starlark: Convert to string for safety
-                            label_str = str(label)
-
-                            # Validate format: KEY=VALUE
-                            if '=' not in label_str:
-                                print("  [wire_when] Warning: skipping malformed label entry '" + label_str + "' (missing '=')")
-                                continue
-
-                            # Starlark: split with maxsplit=1 to handle values with '='
-                            parts = label_str.split('=', 1)
-
-                            # Validate key is not empty
-                            if not parts[0]:
-                                print("  [wire_when] Warning: skipping label with empty key")
-                                continue
-
-                            # Add to dict
-                            labels_dict[parts[0]] = parts[1] if len(parts) > 1 else ''
-
-                        existing = labels_dict
-                    for k, v in service_mods['labels'].items():
-                        existing[k] = v
-                    svc['labels'] = existing
-                    modified = True
-                
-                if modified:
-                    print("    [wire_when] " + source + " wired " + target_service + " for " + trigger_dep)
-    
-    return compose_yaml
+# Loaded from lib/wiring.tilt
+# - wiring.collect_rules() - Collect wire_when rules from all plugins
+# - wiring.apply_rules() - Apply wiring rules to compose files when trigger deps are present
 
 # ============================================================================
 # Compose File Staging
@@ -1525,180 +983,22 @@ def _generate_include_entry(entry):
 # Struct to Dict Conversion
 # ============================================================================
 
-def _struct_to_dict(dep_struct):
-    """
-    Convert a dependency struct to a dict for internal processing.
-
-    Structs from cc_import(), cc_create(), or cc_parse_cli_plugins() need
-    to be converted to dicts for the internal processing pipeline.
-    """
-    # Handle modifications as either a method (new cc_create) or list
-    mods = getattr(dep_struct, 'modifications', [])
-    modifications = mods() if type(mods) == 'function' else mods
-
-    result = {
-        'name': dep_struct.name,
-        '_compose_overrides_param': getattr(dep_struct, '_compose_overrides_param', {}),
-        'profiles': getattr(dep_struct, 'profiles', []),
-        'labels': getattr(dep_struct, 'labels', []),
-        'resource_deps': getattr(dep_struct, 'resource_deps', []),
-        'modifications': modifications,
-        '_from_cli': dep_struct._from_cli,
-        '_is_local': getattr(dep_struct, '_is_local', False),
-    }
-
-    # Handle local_compose structs
-    if getattr(dep_struct, '_is_local', False):
-        result['compose_path'] = dep_struct.compose_path
-        result['dependencies'] = dep_struct.dependencies
-        result['symbols'] = dep_struct._symbols
-    else:
-        # Remote dependency
-        result['url'] = dep_struct.url
-        result['ref'] = dep_struct.ref
-        result['repo_path'] = dep_struct.repo_path
-        result['compose_path'] = getattr(dep_struct, 'compose_path', None)
-        result['dependencies'] = getattr(dep_struct, 'dependencies', [])
-        result['symbols'] = dep_struct._symbols
-
-    return result
-
-def _apply_modifications(dependencies, modifications):
-    """
-    Apply modification dicts to their target dependencies.
-    
-    Each modification should have a '_target' field indicating which
-    dependency to modify, and a 'compose_overrides'-like structure.
-    """
-    # Build a map of dep name -> dep for quick lookup
-    dep_map = {}
-    for dep in dependencies:
-        dep_map[dep['name']] = dep
-    
-    for mod in modifications:
-        if type(mod) != 'dict':
-            continue
-        
-        target = mod.get('_target')
-        if not target:
-            print("  Warning: modification has no _target, skipping")
-            continue
-        
-        if target not in dep_map:
-            print("  Warning: modification target '" + target + "' not in dependencies, skipping")
-            continue
-        
-        dep = dep_map[target]
-        
-        # Extract compose_overrides from modification (everything except _target)
-        mod_overrides = {}
-        for key in mod:
-            if not key.startswith('_'):
-                mod_overrides[key] = mod[key]
-
-        # Deep merge into existing compose_overrides
-        existing = dep.get('_compose_overrides_param', {})
-        dep['_compose_overrides_param'] = _deep_merge(existing, mod_overrides)
-        
-        print("  Applied modification to: " + target)
+# Struct conversion and modification functions loaded from lib/dependency_graph.tilt
 
 # ============================================================================
 # Dependency Tree Flattening
 # ============================================================================
 
-def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles=None):
-    """
-    Flatten a dependency tree into a list, preserving order (dependencies first).
-    
-    Walks the tree depth-first, adding each unique dependency once.
-    Filters dependencies based on active profiles.
-    Returns a flat list suitable for compose assembly.
-    
-    Args:
-        root: The root plugin struct (local_compose or dependency)
-        cli_plugins: Additional plugins from CLI
-        seen_names: Set of already-seen dependency names (for recursion)
-        active_profiles: List of active profile names (uses module-level if None)
-    
-    Returns:
-        Flat list of dependency dicts, dependencies before dependents
-    """
-    if seen_names == None:
-        seen_names = {}
-    
-    if active_profiles == None:
-        active_profiles = _active_profiles
-    
-    result = []
-    
-    # Process root's dependencies first (depth-first)
-    root_dict = _struct_to_dict(root) if type(root) == 'struct' else root
-
-    for dep in root_dict.get('dependencies', []):
-        # Starlark: Check for None explicitly
-        if dep == None:
-            fail("Dependency list contains None in '" + root_dict.get('name', '<unknown>') + "'")
-
-        # Starlark: Use multiple conditions (no 'in' operator for types)
-        if type(dep) != 'struct' and type(dep) != 'dict':
-            fail("Invalid dependency type in '" + root_dict.get('name', '<unknown>') + "': expected struct or dict, got " + str(type(dep)))
-
-        dep_dict = _struct_to_dict(dep) if type(dep) == 'struct' else dep
-        
-        # Check if dependency should be included based on profiles
-        dep_profiles = dep_dict.get('profiles', [])
-        if not _is_dep_included_by_profile(dep_profiles, active_profiles):
-            print("    [profiles] Skipping " + dep_dict['name'] + " (profiles: " + str(dep_profiles) + ")")
-            continue
-        
-        if dep_dict['name'] not in seen_names:
-            seen_names[dep_dict['name']] = dep_dict
-            
-            # Recursively flatten this dependency's dependencies
-            nested = _flatten_dependency_tree(dep, [], seen_names, active_profiles)
-            for n in nested:
-                if n['name'] not in [r['name'] for r in result]:
-                    result.append(n)
-            
-            result.append(dep_dict)
-        else:
-            # Merge compose_overrides if we've seen this dep before
-            existing = seen_names[dep_dict['name']]
-            if dep_dict.get('_compose_overrides_param'):
-                existing['_compose_overrides_param'] = _deep_merge(
-                    existing.get('_compose_overrides_param', {}),
-                    dep_dict['_compose_overrides_param']
-                )
-    
-    # Add root itself (local plugin) - root is always included
-    if root_dict['name'] not in seen_names:
-        seen_names[root_dict['name']] = root_dict
-        result.append(root_dict)
-    
-    # Process CLI plugins (they may bring their own dependency trees)
-    for cli_plugin in cli_plugins:
-        cli_dict = _struct_to_dict(cli_plugin) if type(cli_plugin) == 'struct' else cli_plugin
-        
-        # Check if CLI plugin should be included based on profiles
-        cli_profiles = cli_dict.get('profiles', [])
-        if not _is_dep_included_by_profile(cli_profiles, active_profiles):
-            print("    [profiles] Skipping CLI plugin " + cli_dict['name'] + " (profiles: " + str(cli_profiles) + ")")
-            continue
-        
-        if cli_dict['name'] not in seen_names:
-            # Flatten CLI plugin's dependencies
-            nested = _flatten_dependency_tree(cli_plugin, [], seen_names, active_profiles)
-            for n in nested:
-                if n['name'] not in [r['name'] for r in result]:
-                    result.append(n)
-    
-    return result
+# Loaded from lib/dependency_graph.tilt
+# - dependency_graph.flatten() - Flatten dependency tree with profile filtering
+# - dependency_graph.struct_to_dict() - Convert plugin structs to dicts
+# - dependency_graph.apply_modifications() - Apply cross-plugin compose_overrides
 
 # ============================================================================
 # Main Entry Point
 # ============================================================================
 
-def cc_generate_master_compose(
+def _cc_generate_master_compose(
     root_plugin,
     cli_plugins=[],
     staging_dir=None,
@@ -1706,11 +1006,11 @@ def cc_generate_master_compose(
     cc=None
 ):
     """
-    Generate master compose file by assembling the dependency tree.
+    INTERNAL: Generate master compose file by assembling the dependency tree.
 
     This function is symmetric - any plugin can be the orchestrator and
     the result will be the same, because:
-    - Wiring rules are defined declaratively in extensions (get_wire_when)
+    - Wiring rules are defined declaratively in extensions (cc_wire_when)
     - Dependencies declare their own dependencies via get_plugin()
     - compose_overrides are deep-merged when dependencies overlap
     - Modifications can be declared in plugin definitions (cc_create)
@@ -1804,7 +1104,7 @@ def cc_generate_master_compose(
     _run_plugin_setup(cc)
 
     # Show active profiles
-    active = cc_get_active_profiles()
+    active = _cc_get_active_profiles()
     if active:
         print("\nActive profiles: " + ", ".join(active))
     else:
@@ -1812,7 +1112,7 @@ def cc_generate_master_compose(
     
     # Flatten the dependency tree (with profile filtering)
     print("\nFlattening dependency tree:")
-    dependencies = _flatten_dependency_tree(root_plugin, cli_plugins)
+    dependencies = dependency_graph.flatten(root_plugin, cli_plugins, util, profiles, _active_profiles)
     print("  Total dependencies: " + str(len(dependencies)))
     for dep in dependencies:
         local_marker = " (local)" if dep.get('_is_local') else ""
@@ -1826,14 +1126,14 @@ def cc_generate_master_compose(
     plugin_modifications = []
 
     # Collect from root plugin
-    root_dict = _struct_to_dict(root_plugin) if type(root_plugin) == 'struct' else root_plugin
+    root_dict = dependency_graph.struct_to_dict(root_plugin, util) if type(root_plugin) == 'struct' else root_plugin
     if root_dict.get('modifications'):
         plugin_modifications.extend(root_dict['modifications'])
         print("\n  Collected " + str(len(root_dict['modifications'])) + " modification(s) from " + root_dict['name'])
 
     # Collect from CLI plugins
     for cli_plugin in cli_plugins:
-        cli_dict = _struct_to_dict(cli_plugin) if type(cli_plugin) == 'struct' else cli_plugin
+        cli_dict = dependency_graph.struct_to_dict(cli_plugin, util) if type(cli_plugin) == 'struct' else cli_plugin
         if cli_dict.get('modifications'):
             plugin_modifications.extend(cli_dict['modifications'])
             print("  Collected " + str(len(cli_dict['modifications'])) + " modification(s) from " + cli_dict['name'])
@@ -1855,7 +1155,7 @@ def cc_generate_master_compose(
     # (wire_when rules can contain markers like _database_requirement that need
     # to be processed by callbacks before compose assembly)
     print("\nCollecting wiring rules (for markers):")
-    early_wire_when_rules = _collect_wire_when_rules(dependencies, cc=cc)
+    early_wire_when_rules = wiring.collect_rules(dependencies, cc=cc)
 
     # Extract markers from activated wire_when rules
     # (rules are "activated" when their trigger dependency is present)
@@ -1924,7 +1224,7 @@ def cc_generate_master_compose(
             print("  Plugin-declared: " + str(len(plugin_modifications)))
         if modifications:
             print("  Orchestrator-provided: " + str(len(modifications)))
-        _apply_modifications(dependencies, all_modifications)
+        dependency_graph.apply_modifications(dependencies, all_modifications, util)
     
     # ========================================================================
     # Collect loaded deps and their symbols
@@ -1951,7 +1251,7 @@ def cc_generate_master_compose(
     # Phase 2: Collect wire_when rules from all extensions
     # ========================================================================
     print("\nCollecting wiring rules:")
-    wire_when_rules = _collect_wire_when_rules(loaded_deps, cc=cc)
+    wire_when_rules = wiring.collect_rules(loaded_deps, cc=cc)
     
     for trigger, rule_sets in wire_when_rules.items():
         sources = [rs['source_dep'] for rs in rule_sets]
@@ -1976,17 +1276,17 @@ def cc_generate_master_compose(
 
         # Read the compose file content
         content = read_yaml(compose_path)
-        original_content = _deep_copy(content)
+        original_content = util.deep_copy(content)
 
         # Apply static compose_overrides from dependency definition
         # Note: CRD mounts come through compose_overrides via register_crds() helper
         overrides = dep.get('_compose_overrides_param')
         if overrides:
             print("    -> Applying compose_overrides")
-            content = _deep_merge(content, overrides)
+            content = util.deep_merge(content, overrides)
 
         # Apply wire_when rules
-        content = _apply_wire_when_rules(content, dep['name'], wire_when_rules, loaded_dep_names)
+        content = wiring.apply_rules(content, dep['name'], wire_when_rules, loaded_dep_names, util)
 
         # Validate for duplicate volume mounts
         # NOTE: Validation disabled - Docker Compose allows duplicate mounts (last wins)
@@ -2032,7 +1332,7 @@ def cc_generate_master_compose(
             service_profiles = service_config.get('profiles', [])
             if service_profiles:
                 # Service has profiles - only include if they match active profiles
-                if not _is_dep_included_by_profile(service_profiles, active):
+                if not profiles.is_included(service_profiles, active):
                     continue  # Skip this service, its profiles don't match
 
             # Services can only belong to one plugin, so we don't merge labels
@@ -2176,11 +1476,11 @@ def cc_init(
     def _create(name, compose_path, *dependencies, **kwargs):
         # Pass cc to enable dependency inference and dynamic modifications
         kwargs['cc'] = _cc_holder['cc']
-        return cc_create(name, compose_path, *dependencies, **kwargs)
+        return _cc_create(name, compose_path, *dependencies, **kwargs)
 
     def _generate_master_compose(root_plugin, cli_plugins=[], staging_dir=None, modifications=[]):
         actual_staging_dir = staging_dir if staging_dir != None else _staging_dir
-        return cc_generate_master_compose(
+        return _cc_generate_master_compose(
             root_plugin=root_plugin,
             cli_plugins=cli_plugins,
             staging_dir=actual_staging_dir,
@@ -2189,13 +1489,13 @@ def cc_init(
         )
 
     def _parse_cli_plugins(tiltfile_dir=None):
-        return cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
+        return _cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
 
     def _docker_compose(master_compose, **kwargs):
-        return cc_docker_compose(master_compose, project_name=_name, **kwargs)
+        return _cc_docker_compose(master_compose, project_name=_name, **kwargs)
 
     def _get_active_profiles():
-        return cc_get_active_profiles()
+        return _cc_get_active_profiles()
 
     def _test_exports():
         return cc_test_exports()
@@ -2243,26 +1543,51 @@ def cc_init(
 # ============================================================================
 # These are exported for unit testing. Not intended for general use.
 
+# Wrapper function for backwards compatibility with tests (only needed for conditional logic)
+def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles=None):
+    """Wrapper for tests - maintains old signature with active_profiles defaulting."""
+    if active_profiles == None:
+        active_profiles = _active_profiles
+    return dependency_graph.flatten(root, cli_plugins, util, profiles, active_profiles, seen_names)
+
 def cc_test_exports():
-    """Returns internal functions for testing."""
+    """
+    Returns internal functions for testing.
+
+    Uses inline lambdas to inject module dependencies (util, profiles) so tests
+    can call functions with simplified signatures. Only _flatten_dependency_tree
+    needs a named function due to conditional logic for active_profiles default.
+
+    NOTE: Module-level API functions (cc_create, cc_import, etc.) are exposed here
+    for test compatibility. Production code should use cc_init() fluent API instead.
+    """
     return {
-        'deep_merge': _deep_merge,
-        'deep_copy': _deep_copy,
-        'collect_wire_when_rules': _collect_wire_when_rules,
-        'apply_wire_when_rules': _apply_wire_when_rules,
-        'is_url': _is_url,
+        # Module utility functions
+        'deep_merge': util.deep_merge,
+        'deep_copy': util.deep_copy,
+        # Inline wrappers inject dependencies for clean test signatures
+        'collect_wire_when_rules': lambda loaded_deps, cc=None: wiring.collect_rules(loaded_deps, cc=cc),
+        'apply_wire_when_rules': lambda compose_yaml, dep_name, wire_when_rules, loaded_dep_names: wiring.apply_rules(compose_yaml, dep_name, wire_when_rules, loaded_dep_names, util),
+        'is_url': util.is_url,
         'resolve_plugin_spec': _resolve_plugin_spec,
-        'struct_to_dict': _struct_to_dict,
-        'apply_modifications': _apply_modifications,
+        'struct_to_dict': lambda dep_struct: dependency_graph.struct_to_dict(dep_struct, util),
+        'apply_modifications': lambda dependencies, modifications: dependency_graph.apply_modifications(dependencies, modifications, util),
         'add_target_wrapper': _add_target_wrapper,
         'flatten_dependency_tree': _flatten_dependency_tree,
-        'is_dep_included_by_profile': _is_dep_included_by_profile,
-        'get_active_profiles': _get_active_profiles,
-        'parse_url_with_ref': _parse_url_with_ref,
+        'is_dep_included_by_profile': profiles.is_included,
+        # Internal API functions (exposed for test compatibility)
+        'cc_create': _cc_create,
+        'cc_import': _cc_import,
+        'cc_generate_master_compose': _cc_generate_master_compose,
+        'cc_parse_cli_plugins': _cc_parse_cli_plugins,
+        'cc_docker_compose': _cc_docker_compose,
+        'get_active_profiles': _cc_get_active_profiles,
+        # Other utilities
+        'parse_url_with_ref': util.parse_url_with_ref,
         'get_compose_path_from_dep': _get_compose_path_from_dep,
-        'is_named_volume': _is_named_volume,
-        'parse_volume_mount': _parse_volume_mount,
-        'validate_volume_mounts': _validate_volume_mounts,
+        'is_named_volume': util.is_named_volume,
+        'parse_volume_mount': util.parse_volume_mount,
+        'validate_volume_mounts': util.validate_volume_mounts,
         'run_plugin_setup': _run_plugin_setup,
         'is_bindable_symbol': _is_bindable_symbol,
         'RESERVED_SYMBOLS': _RESERVED_SYMBOLS,
