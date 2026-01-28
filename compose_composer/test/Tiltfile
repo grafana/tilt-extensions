@@ -2,10 +2,12 @@
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
 
-load('../Tiltfile', 'cc_test_exports', 'cc_import', 'cc_create', 'cc_generate_master_compose', 'cc_parse_cli_plugins', 'cc_get_active_profiles', 'cc_init')
+# Only load public API (cc_init) and test exports function
+load('../Tiltfile', 'cc_test_exports', 'cc_init')
 load('./integration_test.tilt', 'run_integration_tests')
 
-# Get internal functions for testing
+# Get internal functions for testing via cc_test_exports()
+# This provides access to internal functions that aren't part of the public API
 _internals = cc_test_exports()
 deep_merge = _internals['deep_merge']
 deep_copy = _internals['deep_copy']
@@ -24,6 +26,13 @@ is_named_volume = _internals['is_named_volume']
 run_plugin_setup = _internals['run_plugin_setup']
 is_bindable_symbol = _internals['is_bindable_symbol']
 RESERVED_SYMBOLS = _internals['RESERVED_SYMBOLS']
+# Internal API functions (used by unit tests, production code uses cc_init() fluent API)
+cc_create = _internals['cc_create']
+cc_import = _internals['cc_import']
+cc_generate_master_compose = _internals['cc_generate_master_compose']
+cc_parse_cli_plugins = _internals['cc_parse_cli_plugins']
+cc_docker_compose = _internals['cc_docker_compose']
+cc_get_active_profiles = _internals['get_active_profiles']
 
 # ============================================================================
 # Test Helpers

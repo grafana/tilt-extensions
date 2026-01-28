@@ -65,15 +65,30 @@ This avoids circular dependencies and keeps modules decoupled.
 - `wiring.collect_rules()` - Collect get_wire_when() exports from all plugins
 - `wiring.apply_rules()` - Apply wiring rules when trigger dependencies are present
 
-### Key Functions (Tiltfile)
+### Public API (Fluent API Pattern)
 
-- `cc_import(name, ...)` - Load a remote composable and return a plugin struct (URL defaults to `COMPOSABLES_URL` env var or `https://github.com/grafana/composables@main`)
-- `cc_create(name, compose_path, *deps, ...)` - Declare a local plugin with dependencies
-- `cc_parse_cli_plugins(tiltfile_dir)` - Parse CLI args into plugin structs
-- `cc_generate_master_compose(root, cli_plugins, ...)` - Assemble dependency tree into master compose
-- `cc_docker_compose(master)` - Wrapper that sets COMPOSE_PROFILES and auto-registers services
+The **only** public entry point is `cc_init()`. All other functions are accessed through the returned `cc` struct:
 
-### Processing Pipeline (in cc_generate_master_compose)
+```python
+# Initialize compose_composer (ONLY public function)
+cc = cc_init(
+    name='my-project',                           # Docker Compose project name
+    composables_url='https://github.com/...',    # Optional: default URL for cc.use()
+    staging_dir='./.cc',                          # Optional: where to stage files
+)
+
+# All operations through cc struct
+mysql = cc.use('mysql')                           # Load remote composable (was cc_import)
+plugin = cc.create('my-plugin', './compose.yaml', mysql)  # Create local plugin (was cc_create)
+cli_plugins = cc.parse_cli_plugins()              # Parse CLI args (was cc_parse_cli_plugins)
+master = cc.generate_master_compose(plugin, cli_plugins)  # Generate master (was cc_generate_master_compose)
+cc.docker_compose(master)                         # Start containers (was cc_docker_compose)
+profiles = cc.get_active_profiles()               # Get active profiles (was cc_get_active_profiles)
+```
+
+**Design Rationale**: The fluent API pattern ensures context (project name, URLs, directories) is captured at initialization and automatically applied to all operations. This prevents errors from forgetting to pass context and provides a cleaner interface.
+
+### Processing Pipeline (in cc.generate_master_compose)
 
 1. Flatten dependency tree with profile filtering
 2. Collect plugin-declared modifications from `modifications` parameter
@@ -164,15 +179,26 @@ Tests are in `test/Tiltfile` using a custom test framework with `assert_equals()
 - `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS`
 - `GF_FEATURE_TOGGLES_ENABLE`
 
-### Extension Export Requirements
+### Extension Export Requirements (Plugin Callbacks)
 
-Every composable must export:
-- `cc_export()` - Returns plugin struct from `cc_create()`
+These are **callbacks** implemented by plugins, not part of the public API:
 
-Optional exports:
-- `get_wire_when()` - Returns conditional wiring rules
-- `cc_setup(ctx)` - Host-side setup called by `cc_docker_compose()`
+**Required:**
+- `cc_export(cc=None)` - Returns plugin struct. When `cc` is provided (orchestrator context), use `cc.create()` and `cc.use()` to build dependencies. Otherwise, manually construct the struct.
+
+**Optional:**
+- `get_wire_when(cc=None)` - Returns conditional wiring rules for declarative dependency wiring
+- `cc_setup(plugin_ctx)` - Host-side setup called by `cc.generate_master_compose()` before processing
 - `process_accumulated_modifications(mods, orchestrator_dir)` - Process markers from other plugins
+
+**Example plugin with cc context:**
+```python
+def cc_export(cc):
+    """Export plugin using fluent API when orchestrator provides cc context."""
+    mysql = cc.use('mysql')
+    redis = cc.use('redis')
+    return cc.create('my-plugin', './compose.yaml', mysql, redis)
+```
 
 ## Key Files
 
@@ -188,7 +214,7 @@ Optional exports:
 
 ## Environment Variables
 
-- `COMPOSABLES_URL` - Default URL for `cc_import()` when `url` parameter is not provided (default: `https://github.com/grafana/composables@main`)
+- `COMPOSABLES_URL` - Default URL for `cc.use()` when `url` parameter is not provided (default: `https://github.com/grafana/composables@main`)
 - `CC_PROFILES` - Comma-separated list of profiles to activate
 - `CC_SKIP_SETUP` - Skip calling `cc_setup()` for all plugins
 - `CC_DRY_RUN` - Generate files but skip starting containers

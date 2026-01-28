@@ -74,9 +74,9 @@ _RESERVED_SYMBOLS = [
     'process_accumulated_modifications',
 ]
 
-def cc_get_active_profiles():
+def _cc_get_active_profiles():
     """
-    Get the list of currently active profiles.
+    INTERNAL: Get the list of currently active profiles.
     
     Use this to pass profile flags to docker_compose() if needed.
     
@@ -136,13 +136,13 @@ def _run_plugin_setup(cc):
     else:
         print("  Completed setup for " + str(setup_count) + " plugin(s)")
 
-def cc_docker_compose(master_compose, project_name=None, **kwargs):
+def _cc_docker_compose(master_compose, project_name=None, **kwargs):
     """
-    Invoke docker_compose() with active profiles automatically set via environment
+    INTERNAL: Invoke docker_compose() with active profiles automatically set via environment
     and auto-register services with dc_resource().
 
     This is a convenience wrapper that:
-    1. Sets COMPOSE_PROFILES environment variable based on cc_get_active_profiles()
+    1. Sets COMPOSE_PROFILES environment variable based on _cc_get_active_profiles()
     2. Extracts service-to-labels mapping from master_compose dict
     3. Calls docker_compose() to load the compose configuration
     4. Automatically registers all services with dc_resource() using their labels
@@ -194,7 +194,7 @@ def cc_docker_compose(master_compose, project_name=None, **kwargs):
         # Skip plugin setup:
         # CC_SKIP_SETUP=1 tilt up
     """
-    active = cc_get_active_profiles()
+    active = _cc_get_active_profiles()
 
     # Set COMPOSE_PROFILES environment variable for docker-compose
     # This must be set in the process environment, not passed to docker_compose()
@@ -276,9 +276,9 @@ def cc_docker_compose(master_compose, project_name=None, **kwargs):
 # Local Compose (Plugin Declaration)
 # ============================================================================
 
-def cc_create(name, compose_path, *dependencies, **kwargs):
+def _cc_create(name, compose_path, *dependencies, **kwargs):
     """
-    Declare a local plugin with its compose path and dependencies.
+    INTERNAL: Declare a local plugin with its compose path and dependencies.
 
     Every plugin should export a cc_export() function that returns
     a cc_create struct. This creates a uniform dependency tree model.
@@ -607,9 +607,9 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     return plugin
 
 
-def cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
+def _cc_import(name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
-    Declare a dependency on a remote plugin and load its extension.
+    INTERNAL: Declare a dependency on a remote plugin and load its extension.
 
     This function registers the extension with Tilt, loads its symbols,
     and returns a struct with bound helper functions.
@@ -846,9 +846,9 @@ def _resolve_plugin_spec(plugin, tiltfile_dir):
         '_from_cli': True,
     }
 
-def cc_parse_cli_plugins(tiltfile_dir=None, cc=None):
+def _cc_parse_cli_plugins(tiltfile_dir=None, cc=None):
     """
-    Parse CLI positional args and return list of dependency structs.
+    INTERNAL: Parse CLI positional args and return list of dependency structs.
 
     Each CLI plugin is loaded as a dependency struct, just like core dependencies.
     This provides a uniform interface for all dependencies.
@@ -998,7 +998,7 @@ def _generate_include_entry(entry):
 # Main Entry Point
 # ============================================================================
 
-def cc_generate_master_compose(
+def _cc_generate_master_compose(
     root_plugin,
     cli_plugins=[],
     staging_dir=None,
@@ -1006,7 +1006,7 @@ def cc_generate_master_compose(
     cc=None
 ):
     """
-    Generate master compose file by assembling the dependency tree.
+    INTERNAL: Generate master compose file by assembling the dependency tree.
 
     This function is symmetric - any plugin can be the orchestrator and
     the result will be the same, because:
@@ -1104,7 +1104,7 @@ def cc_generate_master_compose(
     _run_plugin_setup(cc)
 
     # Show active profiles
-    active = cc_get_active_profiles()
+    active = _cc_get_active_profiles()
     if active:
         print("\nActive profiles: " + ", ".join(active))
     else:
@@ -1476,11 +1476,11 @@ def cc_init(
     def _create(name, compose_path, *dependencies, **kwargs):
         # Pass cc to enable dependency inference and dynamic modifications
         kwargs['cc'] = _cc_holder['cc']
-        return cc_create(name, compose_path, *dependencies, **kwargs)
+        return _cc_create(name, compose_path, *dependencies, **kwargs)
 
     def _generate_master_compose(root_plugin, cli_plugins=[], staging_dir=None, modifications=[]):
         actual_staging_dir = staging_dir if staging_dir != None else _staging_dir
-        return cc_generate_master_compose(
+        return _cc_generate_master_compose(
             root_plugin=root_plugin,
             cli_plugins=cli_plugins,
             staging_dir=actual_staging_dir,
@@ -1489,13 +1489,13 @@ def cc_init(
         )
 
     def _parse_cli_plugins(tiltfile_dir=None):
-        return cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
+        return _cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
 
     def _docker_compose(master_compose, **kwargs):
-        return cc_docker_compose(master_compose, project_name=_name, **kwargs)
+        return _cc_docker_compose(master_compose, project_name=_name, **kwargs)
 
     def _get_active_profiles():
-        return cc_get_active_profiles()
+        return _cc_get_active_profiles()
 
     def _test_exports():
         return cc_test_exports()
@@ -1557,8 +1557,12 @@ def cc_test_exports():
     Uses inline lambdas to inject module dependencies (util, profiles) so tests
     can call functions with simplified signatures. Only _flatten_dependency_tree
     needs a named function due to conditional logic for active_profiles default.
+
+    NOTE: Module-level API functions (cc_create, cc_import, etc.) are exposed here
+    for test compatibility. Production code should use cc_init() fluent API instead.
     """
     return {
+        # Module utility functions
         'deep_merge': util.deep_merge,
         'deep_copy': util.deep_copy,
         # Inline wrappers inject dependencies for clean test signatures
@@ -1571,7 +1575,14 @@ def cc_test_exports():
         'add_target_wrapper': _add_target_wrapper,
         'flatten_dependency_tree': _flatten_dependency_tree,
         'is_dep_included_by_profile': profiles.is_included,
-        'get_active_profiles': cc_get_active_profiles,
+        # Internal API functions (exposed for test compatibility)
+        'cc_create': _cc_create,
+        'cc_import': _cc_import,
+        'cc_generate_master_compose': _cc_generate_master_compose,
+        'cc_parse_cli_plugins': _cc_parse_cli_plugins,
+        'cc_docker_compose': _cc_docker_compose,
+        'get_active_profiles': _cc_get_active_profiles,
+        # Other utilities
         'parse_url_with_ref': util.parse_url_with_ref,
         'get_compose_path_from_dep': _get_compose_path_from_dep,
         'is_named_volume': util.is_named_volume,
