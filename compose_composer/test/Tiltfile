@@ -447,7 +447,7 @@ def test_collect_wire_when_rules_single():
         }
     
     deps = [
-        {'name': 'grafana', 'symbols': {'get_wire_when': mock_wire_when}},
+        {'name': 'grafana', 'symbols': {'cc_wire_when': mock_wire_when}},
     ]
     result = collect_wire_when_rules(deps)
     assert_in('k3s-apiserver', result)
@@ -464,8 +464,8 @@ def test_collect_wire_when_rules_multiple():
         return {'k3s-apiserver': {'services': {'svc2': {}}}}
     
     deps = [
-        {'name': 'ext1', 'symbols': {'get_wire_when': wire_when_1}},
-        {'name': 'ext2', 'symbols': {'get_wire_when': wire_when_2}},
+        {'name': 'ext1', 'symbols': {'cc_wire_when': wire_when_1}},
+        {'name': 'ext2', 'symbols': {'cc_wire_when': wire_when_2}},
     ]
     result = collect_wire_when_rules(deps)
     assert_in('k3s-apiserver', result)
@@ -1463,10 +1463,10 @@ def test_resolve_plugin_spec_git_ssh():
 
 def test_collect_wire_when_rules_with_valid_dict():
     """Test that valid wire_when rules are collected."""
-    # Create mock dependencies with get_wire_when
+    # Create mock dependencies with cc_wire_when
     dep1 = struct_to_dict(cc_create('dep1', '/path/to/dep1.yaml'))
     dep1['symbols'] = {
-        'get_wire_when': lambda: {
+        'cc_wire_when': lambda: {
             'trigger': {
                 'services': {
                     'test': {

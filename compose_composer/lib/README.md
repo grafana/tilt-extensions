@@ -220,10 +220,10 @@ def flatten(root, cli_plugins, util, profiles_module, ...):
 **Exports** (via `wiring` struct):
 
 - `wiring.collect_rules(loaded_deps, cc=None)` - Collect wire_when rules from all plugins
-  - Calls: `get_wire_when()` export from each plugin
+  - Calls: `cc_wire_when()` export from each plugin
   - Args:
     - `loaded_deps`: List of loaded dependency dicts with 'symbols' field
-    - `cc`: Optional orchestrator context to pass to get_wire_when(cc)
+    - `cc`: Optional orchestrator context to pass to cc_wire_when(cc)
   - Returns: Dict mapping trigger_dep_name to list of rule sets
   - Format:
     ```python
@@ -248,7 +248,7 @@ def flatten(root, cli_plugins, util, profiles_module, ...):
 **Wire-When Rule Format:**
 ```python
 # In plugin-b/Tiltfile
-def get_wire_when():
+def cc_wire_when():
     return {
         'database': {  # When 'database' is loaded
             'services': {

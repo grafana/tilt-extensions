@@ -99,7 +99,7 @@ def _flatten_dependency_tree(root, cli_plugins, seen_names=None, active_profiles
 **Main File Reduction**: 210 lines
 
 **Functions Extracted**:
-- `wiring.collect_rules(loaded_deps, cc)` - Collect get_wire_when() exports from plugins
+- `wiring.collect_rules(loaded_deps, cc)` - Collect cc_wire_when() exports from plugins
 - `wiring.apply_rules(compose_yaml, dep_name, rules, loaded_deps, util)` - Apply declarative wiring rules
 
 **Pattern**: Same dependency injection pattern
@@ -320,7 +320,7 @@ Extraction Order:
 - Deduplicate dependencies, merge overrides
 
 **lib/wiring.tilt** (declarative wiring system)
-- Collect get_wire_when() rules from all plugins
+- Collect cc_wire_when() rules from all plugins
 - Apply rules when trigger dependencies are loaded
 - Modify services: depends_on, volumes, environment, labels
 - Enable symmetric orchestration

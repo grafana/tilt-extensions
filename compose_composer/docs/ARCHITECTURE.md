@@ -194,7 +194,7 @@ mindmap
         Target resolution
     lib/wiring.tilt
       Rule Collection
-        get_wire_when calls
+        cc_wire_when calls
         Context passing
       Rule Application
         depends_on
@@ -279,12 +279,12 @@ This diagram shows how the declarative wiring system enables symmetric orchestra
 graph TB
     subgraph "Plugin A"
         A_Compose[compose.yaml<br/>service: app]
-        A_WireWhen[get_wire_when<br/>'database': rules]
+        A_WireWhen[cc_wire_when<br/>'database': rules]
     end
 
     subgraph "Plugin B"
         B_Compose[compose.yaml<br/>service: api]
-        B_WireWhen[get_wire_when<br/>'database': rules]
+        B_WireWhen[cc_wire_when<br/>'database': rules]
     end
 
     subgraph "Database Plugin"

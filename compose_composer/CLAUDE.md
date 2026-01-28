@@ -10,9 +10,9 @@ compose_composer is a Tilt extension (~1900 lines of Starlark) that enables dyna
 
 **Composables**: Tilt extensions that wrap a docker-compose file and optionally expose helper functions. Any composable can import other composables, creating symmetric orchestration.
 
-**Symmetric Orchestration**: Any plugin can be the orchestrator. The result is the same regardless of which plugin initiates composition because wiring is declarative (via `get_wire_when()`) rather than imperative.
+**Symmetric Orchestration**: Any plugin can be the orchestrator. The result is the same regardless of which plugin initiates composition because wiring is declarative (via `cc_wire_when()`) rather than imperative.
 
-**Wire-When Rules**: Declarative rules that define how components wire themselves together when other dependencies are present. Defined via `get_wire_when()` export.
+**Wire-When Rules**: Declarative rules that define how components wire themselves together when other dependencies are present. Defined via `cc_wire_when()` export.
 
 ## Architecture
 
@@ -62,7 +62,7 @@ This avoids circular dependencies and keeps modules decoupled.
 - `dependency_graph.apply_modifications()` - Apply cross-plugin compose_overrides
 
 **lib/wiring.tilt** - Declarative wiring (wire-when) system:
-- `wiring.collect_rules()` - Collect get_wire_when() exports from all plugins
+- `wiring.collect_rules()` - Collect cc_wire_when() exports from all plugins
 - `wiring.apply_rules()` - Apply wiring rules when trigger dependencies are present
 
 ### Public API (Fluent API Pattern)
@@ -92,7 +92,7 @@ profiles = cc.get_active_profiles()               # Get active profiles (was cc_
 
 1. Flatten dependency tree with profile filtering
 2. Collect plugin-declared modifications from `modifications` parameter
-3. Collect wire-when rules via `get_wire_when()` exports
+3. Collect wire-when rules via `cc_wire_when()` exports
 4. Apply modifications to target dependencies
 5. Apply wire-when rules to compose files
 6. Stage modified compose files to `.cc/` directory
@@ -187,7 +187,7 @@ These are **callbacks** implemented by plugins, not part of the public API:
 - `cc_export(cc=None)` - Returns plugin struct. When `cc` is provided (orchestrator context), use `cc.create()` and `cc.use()` to build dependencies. Otherwise, manually construct the struct.
 
 **Optional:**
-- `get_wire_when(cc=None)` - Returns conditional wiring rules for declarative dependency wiring
+- `cc_wire_when(cc=None)` - Returns conditional wiring rules for declarative dependency wiring
 - `cc_setup(plugin_ctx)` - Host-side setup called by `cc.generate_master_compose()` before processing
 - `process_accumulated_modifications(mods, orchestrator_dir)` - Process markers from other plugins
 

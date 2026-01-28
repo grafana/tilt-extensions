@@ -1,7 +1,7 @@
 # Wiring Utilities for compose_composer
 #
 # This module provides declarative wiring (wire_when) functionality:
-# - Collecting wiring rules from plugins via get_wire_when() exports
+# - Collecting wiring rules from plugins via cc_wire_when() exports
 # - Applying rules to compose files when trigger dependencies are present
 #
 # Wire-when rules allow plugins to declaratively specify how they should
@@ -21,12 +21,12 @@ def _collect_rules(loaded_deps, cc=None):
     """
     Collect wire_when rules from all loaded extensions.
 
-    Each plugin can export a get_wire_when() function that returns rules
+    Each plugin can export a cc_wire_when() function that returns rules
     describing how to wire itself when specific trigger dependencies are present.
 
     Args:
         loaded_deps: List of loaded dependency dicts with 'symbols' field
-        cc: Orchestrator's cc struct to pass to get_wire_when(cc) (optional)
+        cc: Orchestrator's cc struct to pass to cc_wire_when(cc) (optional)
 
     Returns:
         Dict mapping trigger_dep_name to list of rule sets:
@@ -39,7 +39,7 @@ def _collect_rules(loaded_deps, cc=None):
 
     Example:
         # Plugin A exports:
-        def get_wire_when():
+        def cc_wire_when():
             return {
                 'database': {  # When 'database' is loaded
                     'services': {
@@ -55,20 +55,20 @@ def _collect_rules(loaded_deps, cc=None):
 
     for dep in loaded_deps:
         symbols = dep.get('symbols', {})
-        get_wire_when = symbols.get('get_wire_when')
+        cc_wire_when = symbols.get('cc_wire_when')
 
-        if not get_wire_when:
+        if not cc_wire_when:
             continue
 
-        # Call get_wire_when() from the extension, passing cc for orchestrator context
+        # Call cc_wire_when() from the extension, passing cc for orchestrator context
         if cc != None:
-            wire_when = get_wire_when(cc)
+            wire_when = cc_wire_when(cc)
         else:
-            wire_when = get_wire_when()
+            wire_when = cc_wire_when()
 
         # Starlark: Type check before using as dict
         if type(wire_when) != 'dict':
-            print("  Warning: " + dep['name'] + " get_wire_when() returned non-dict, skipping")
+            print("  Warning: " + dep['name'] + " cc_wire_when() returned non-dict, skipping")
             continue
 
         # Iterate over trigger dependencies

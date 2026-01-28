@@ -1,6 +1,6 @@
 # plugin-b: Composable with wire-when rules that trigger on plugin-a
 
-def get_wire_when(cc=None):
+def cc_wire_when(cc=None):
     """Wire plugin-b to plugin-a when plugin-a is present."""
     return {
         'plugin-a': {
@@ -28,7 +28,7 @@ def cc_export(cc=None):
         modifications=lambda: [],
         add_modification=lambda mod: None,
         _compose_overrides_param={},
-        _symbols={'cc_export': cc_export, 'get_wire_when': get_wire_when},
+        _symbols={'cc_export': cc_export, 'cc_wire_when': cc_wire_when},
         _is_local=False,
         _from_cli=False,
     )

@@ -192,7 +192,7 @@ def test_integration_wire_when_rules():
     Test that wire-when rules are correctly applied during composition.
 
     Validates:
-    - get_wire_when() rules are collected
+    - cc_wire_when() rules are collected
     - Rules are applied when trigger dependency is present
     - Compose files are modified and staged
     - Dependencies, volumes, and environment are wired correctly
@@ -212,7 +212,7 @@ def test_integration_wire_when_rules():
     plugin_b_dir = os.path.abspath('fixtures/plugin-b')
 
     # Define wire-when function
-    def get_wire_when(cc=None):
+    def cc_wire_when(cc=None):
         return {
             'plugin-a': {
                 'services': {
@@ -238,7 +238,7 @@ def test_integration_wire_when_rules():
         modifications=lambda: [],
         add_modification=lambda mod: None,
         _compose_overrides_param={},
-        _symbols={'get_wire_when': get_wire_when},
+        _symbols={'cc_wire_when': cc_wire_when},
         _is_local=True,
         _from_cli=False,
     )

@@ -298,7 +298,7 @@ Composables can declare conditional wiring that activates when other dependencie
 
 ```python
 # grafana/Tiltfile
-def get_wire_when():
+def cc_wire_when():
     return {
         'k3s-apiserver': {  # When k3s-apiserver is present...
             'services': {
@@ -447,7 +447,7 @@ Extensions should export these functions:
 | Function | Required | Description |
 |----------|----------|-------------|
 | `cc_get_plugin()` | Yes | Returns plugin struct (name, compose_path, dependencies) |
-| `get_wire_when()` | No | Returns conditional wiring rules |
+| `cc_wire_when()` | No | Returns conditional wiring rules |
 
 ### Compose Overrides
 
@@ -1047,7 +1047,7 @@ def cc_get_plugin():
         # ... dependencies ...
     )
 
-def get_wire_when():
+def cc_wire_when():
     """
     Define how grafana should wire itself to other components.
     These rules only activate when the trigger component is present.

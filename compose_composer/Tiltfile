@@ -5,7 +5,7 @@
 # Design Principle:
 #   Any plugin can be the orchestrator (composer). The result should be the same
 #   regardless of which plugin initiates the composition. This is achieved through:
-#   - Declarative wiring rules in extensions (get_wire_when)
+#   - Declarative wiring rules in extensions (cc_wire_when)
 #   - Dependency graphs that can be merged (get_dependency_graph)
 #   - compose_overrides that are deep-merged when dependencies overlap
 #
@@ -37,7 +37,7 @@
 #
 # Extension exports:
 #   cc_export() -> struct         - Returns plugin struct from cc_create (required)
-#   get_wire_when() -> dict           - Conditional wiring rules (optional)
+#   cc_wire_when() -> dict        - Conditional wiring rules (optional)
 
 # ============================================================================
 # Module Imports
@@ -69,7 +69,7 @@ _active_profiles = profiles.get_active(_cfg)
 # and should not be auto-bound to plugin structs
 _RESERVED_SYMBOLS = [
     'cc_export',
-    'get_wire_when',
+    'cc_wire_when',
     'cc_setup',
     'process_accumulated_modifications',
 ]
@@ -1010,7 +1010,7 @@ def _cc_generate_master_compose(
 
     This function is symmetric - any plugin can be the orchestrator and
     the result will be the same, because:
-    - Wiring rules are defined declaratively in extensions (get_wire_when)
+    - Wiring rules are defined declaratively in extensions (cc_wire_when)
     - Dependencies declare their own dependencies via get_plugin()
     - compose_overrides are deep-merged when dependencies overlap
     - Modifications can be declared in plugin definitions (cc_create)
