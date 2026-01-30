@@ -468,6 +468,112 @@ def _is_bindable_symbol(name, value):
 # Default URL for cc_import when no url parameter is provided
 _DEFAULT_COMPOSABLES_URL = 'https://github.com/grafana/composables@main'
 
+# ============================================================================
+# Migration Detection Functions
+# ============================================================================
+# These functions support the migration from legacy k8s Tiltfiles to
+# compose_composer Tiltfiles. When a repo has both Tiltfile (legacy) and
+# cc/Tiltfile (new), we prefer cc/Tiltfile.
+
+def _get_tilt_data_dir():
+    """
+    Get the Tilt data directory based on XDG spec and platform.
+
+    Tilt stores extensions in {data_dir}/tilt-dev/tilt_modules/
+
+    Platform defaults (when XDG_DATA_HOME is not set):
+    - Linux:   ~/.local/share/tilt-dev/tilt_modules/
+    - macOS:   ~/Library/Application Support/tilt-dev/tilt_modules/
+    - Windows: %LOCALAPPDATA%/tilt-dev/tilt_modules/
+
+    XDG_DATA_HOME override works on all platforms.
+    """
+    # Check for XDG override first (works on all platforms)
+    xdg_data_home = os.environ.get('XDG_DATA_HOME', '')
+    if xdg_data_home:
+        return xdg_data_home + '/tilt-dev/tilt_modules'
+
+    home = os.environ.get('HOME', '')
+
+    # Detect platform by checking for platform-specific indicators
+    # Windows: LOCALAPPDATA is set
+    localappdata = os.environ.get('LOCALAPPDATA', '')
+    if localappdata:
+        return localappdata + '/tilt-dev/tilt_modules'
+
+    # macOS vs Linux: check if ~/Library exists (macOS) or use XDG default (Linux)
+    mac_library = home + '/Library'
+    if os.path.exists(mac_library):
+        # macOS
+        return home + '/Library/Application Support/tilt-dev/tilt_modules'
+    else:
+        # Linux (XDG default)
+        return home + '/.local/share/tilt-dev/tilt_modules'
+
+
+def _get_tilt_module_cache_path(url):
+    """
+    Construct the path where Tilt caches an extension repo.
+
+    After extension_repo() is called, Tilt downloads the repo to:
+    {tilt_data_dir}/{url_without_scheme}
+
+    For file:// URLs, returns the local path directly (no caching).
+    """
+    # Handle file:// URLs - return local path directly
+    if url.startswith('file://'):
+        return url.replace('file://', '')
+
+    cache_base = _get_tilt_data_dir()
+
+    if url.startswith('https://'):
+        url_path = url.replace('https://', '')
+    elif url.startswith('http://'):
+        url_path = url.replace('http://', '')
+    elif url.startswith('git@'):
+        # git@github.com:org/repo -> github.com/org/repo
+        url_path = url.replace('git@', '').replace(':', '/')
+    else:
+        url_path = url
+
+    # Remove .git suffix and trailing slashes
+    url_path = url_path.rstrip('/').replace('.git', '')
+
+    return cache_base + '/' + url_path
+
+
+def _detect_tiltfile_path(cache_path, default_repo_path):
+    """
+    Detect whether to use cc/Tiltfile or the default path.
+
+    Migration logic:
+    - If cc/Tiltfile exists -> use 'cc' (or '{default_repo_path}/cc' for collections)
+    - Otherwise -> use the default_repo_path
+
+    Args:
+        cache_path: Path to the cached repo (from _get_tilt_module_cache_path)
+        default_repo_path: The default repo_path ('.' for standalone, 'name' for collections)
+
+    Returns:
+        The repo_path to use for v1alpha1.extension()
+    """
+    # For collection repos (repo_path != '.'), check within the subdirectory
+    if default_repo_path != '.':
+        subdir_path = cache_path + '/' + default_repo_path
+        cc_tiltfile = subdir_path + '/cc/Tiltfile'
+    else:
+        cc_tiltfile = cache_path + '/cc/Tiltfile'
+
+    if os.path.exists(cc_tiltfile):
+        # Prefer cc/Tiltfile if it exists (migration mode)
+        if default_repo_path != '.':
+            return default_repo_path + '/cc'
+        else:
+            return 'cc'
+
+    return default_repo_path
+
+
 def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
     Internal function to import a composable with orchestrator context.
@@ -513,7 +619,7 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
             # Collection - composable is a subdirectory
             repo_path = name
 
-    # Register extension repo + extension
+    # Register extension repo (downloads the repo to cache)
     repo_name = 'cc-' + name
 
     if url.startswith('file://'):
@@ -521,7 +627,15 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     else:
         v1alpha1.extension_repo(name=repo_name, url=url, ref=ref if ref else 'main')
 
-    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=repo_path)
+    # Migration detection: After repo is cached, check if cc/Tiltfile exists
+    # If both Tiltfile and cc/Tiltfile exist, prefer cc/Tiltfile
+    cache_path = _get_tilt_module_cache_path(url)
+    actual_repo_path = _detect_tiltfile_path(cache_path, repo_path)
+
+    if actual_repo_path != repo_path:
+        print("[compose_composer] Migration detected for '" + name + "': using " + actual_repo_path + "/Tiltfile")
+
+    v1alpha1.extension(name=name, repo_name=repo_name, repo_path=actual_repo_path)
     symbols = load_dynamic('ext://' + name)
 
     # Get plugin info from cc_export() export (required)
@@ -1591,4 +1705,8 @@ def cc_test_exports():
         'run_plugin_setup': _run_plugin_setup,
         'is_bindable_symbol': _is_bindable_symbol,
         'RESERVED_SYMBOLS': _RESERVED_SYMBOLS,
+        # Migration detection functions
+        'get_tilt_data_dir': _get_tilt_data_dir,
+        'get_tilt_module_cache_path': _get_tilt_module_cache_path,
+        'detect_tiltfile_path': _detect_tiltfile_path,
     }

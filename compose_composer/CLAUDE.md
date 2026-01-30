@@ -202,15 +202,52 @@ def cc_export(cc):
 
 ## Key Files
 
-- `Tiltfile` - Main extension implementation and public API (~1,510 lines)
+- `Tiltfile` - Main extension implementation and public API (~1,600 lines)
 - `lib/utils.tilt` - Utility functions (deep merge, URL parsing, volume utilities)
 - `lib/profiles.tilt` - Profile activation and filtering logic
 - `lib/dependency_graph.tilt` - Dependency tree traversal and struct conversion
 - `lib/wiring.tilt` - Declarative wiring system (wire-when rules)
-- `test/Tiltfile` - Test suite (122 unit tests + 12 integration tests)
+- `test/Tiltfile` - Test suite (131 unit tests + 12 integration tests)
+- `test_migration/` - Migration detection test harness and fake repos
 - `docs/README.md` - User documentation
 - `REFACTORING_SUMMARY.md` - Documentation of modular refactoring (Phases 1-5)
 - `future-investigations/` - Design documents for future features
+
+## Migration Detection
+
+compose_composer supports automatic detection of migration scenarios where both a legacy `Tiltfile` and a new `cc/Tiltfile` exist in a composable repository.
+
+### Internal Functions
+
+These functions are in main `Tiltfile` and exported via `cc_test_exports()`:
+
+- `_get_tilt_data_dir()` - Cross-platform detection of Tilt's extension cache directory
+  - Linux: `~/.local/share/tilt-dev/tilt_modules/`
+  - macOS: `~/Library/Application Support/tilt-dev/tilt_modules/`
+  - Windows: `%LOCALAPPDATA%/tilt-dev/tilt_modules/`
+  - Override: `$XDG_DATA_HOME/tilt-dev/tilt_modules/`
+
+- `_get_tilt_module_cache_path(url)` - Construct cache path for extension URL
+  - For `file://` URLs: returns the local path directly
+  - For remote URLs: returns `{tilt_data_dir}/{url_without_scheme}`
+
+- `_detect_tiltfile_path(cache_path, default_repo_path)` - Check if `cc/Tiltfile` exists
+  - If `cc/Tiltfile` exists, returns `'cc'` or `'{default_repo_path}/cc'`
+  - Otherwise returns `default_repo_path`
+
+### Integration Point
+
+Migration detection is integrated into `_cc_import_with_context()`:
+1. After `extension_repo()` downloads/caches the repo
+2. Construct cache path with `_get_tilt_module_cache_path(url)`
+3. Detect actual path with `_detect_tiltfile_path(cache_path, repo_path)`
+4. Pass detected path to `extension()`
+
+### Test Files
+
+- `test_migration/Tiltfile` - Test harness with multiple test modes
+- `test_migration/fake_migrating_repo/Tiltfile` - Legacy file (fails if loaded)
+- `test_migration/fake_migrating_repo/cc/Tiltfile` - New CC version (succeeds)
 
 ## Environment Variables
 
