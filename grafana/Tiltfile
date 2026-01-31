@@ -102,7 +102,10 @@ def load_plugins(base_path, plugin_json_files, run_func=run):
                              enable_tracing     = plugin_config.get('tracing', False) == True,
                              grafana_plugin_dir = "/var/lib/grafana/plugins/%s" % plugin_id,
                              restart_command    = run_func('pkill {plugin_executable} || /bin/true'.format(plugin_executable=plugin_executable),
-                                                            trigger = ['{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)]))
+                                                            trigger = [
+                                                                '{plugin_dist_dir}/{plugin_executable}_linux_amd64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable),
+                                                                '{plugin_dist_dir}/{plugin_executable}_linux_arm64'.format(plugin_dist_dir=plugin_dist_dir, plugin_executable=plugin_executable)
+                                                            ]))
     return configs
 
 def get_or_create(dict, key):
