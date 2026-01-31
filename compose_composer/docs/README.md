@@ -1291,6 +1291,97 @@ if __file__ == config.main_path:
     cc_docker_compose(master)  # Auto-registers services with labels
 ```
 
+## Migration Support
+
+compose_composer includes automatic migration detection for repositories transitioning from legacy Tiltfiles (e.g., k8s-based) to compose_composer Tiltfiles.
+
+### The Migration Problem
+
+When migrating a repository to compose_composer, you may have:
+- A legacy `Tiltfile` at the repo root (k8s-based or other)
+- A new `cc/Tiltfile` for compose_composer
+
+Tilt's extension mechanism expects a `Tiltfile` at `repo_path`, but during migration you need both files to coexist.
+
+### Automatic Detection
+
+compose_composer automatically detects this migration scenario:
+
+1. After downloading/caching the extension repo
+2. Checks if `cc/Tiltfile` exists alongside the default `Tiltfile`
+3. If both exist, automatically uses `cc/Tiltfile`
+
+```
+my-composable/
+  Tiltfile           # Legacy (k8s-based)
+  cc/
+    Tiltfile         # New compose_composer version
+    compose.yaml
+```
+
+When this structure is detected, you'll see:
+```
+[compose_composer] Migration detected for 'my-composable': using cc/Tiltfile
+```
+
+### Migration Workflow
+
+1. **Create the cc/ directory** in your composable:
+   ```bash
+   mkdir cc
+   ```
+
+2. **Add your compose_composer Tiltfile**:
+   ```python
+   # cc/Tiltfile
+   load('ext://compose_composer', 'cc_init')
+
+   def cc_export(cc):
+       return cc.create('my-composable', './compose.yaml')
+   ```
+
+3. **Add your compose file**:
+   ```yaml
+   # cc/compose.yaml
+   services:
+     my-service:
+       image: my-image
+   ```
+
+4. **Test the migration** - compose_composer will automatically use `cc/Tiltfile`
+
+5. **Complete the migration** - once all consumers have migrated:
+   - Move `cc/Tiltfile` to root `Tiltfile`
+   - Move `cc/compose.yaml` to root
+   - Remove `cc/` directory
+
+### Cross-Platform Support
+
+Migration detection works on all platforms by using Tilt's extension cache:
+
+| Platform | Cache Location |
+|----------|----------------|
+| Linux | `~/.local/share/tilt-dev/tilt_modules/` |
+| macOS | `~/Library/Application Support/tilt-dev/tilt_modules/` |
+| Windows | `%LOCALAPPDATA%/tilt-dev/tilt_modules/` |
+
+The `XDG_DATA_HOME` environment variable can override the cache location on any platform.
+
+### Collection Repositories
+
+For collection repositories (multiple composables in one repo), migration detection checks within each composable's subdirectory:
+
+```
+composables/               # Collection repo
+  mysql/
+    Tiltfile              # Legacy
+    cc/
+      Tiltfile            # New (auto-detected)
+      compose.yaml
+  grafana/
+    Tiltfile              # Already migrated (no cc/)
+```
+
 ## Troubleshooting
 
 ### "extensions already registered" error

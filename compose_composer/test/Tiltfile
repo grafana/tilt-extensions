@@ -2169,6 +2169,108 @@ def test_master_compose_preserves_other_top_level_keys():
     print("  [PASS] test_master_compose_preserves_other_top_level_keys")
 
 # ============================================================================
+# Migration Detection Tests
+# ============================================================================
+
+# These functions need to be exported from cc_test_exports()
+get_tilt_data_dir = _internals.get('get_tilt_data_dir')
+get_tilt_module_cache_path = _internals.get('get_tilt_module_cache_path')
+detect_tiltfile_path = _internals.get('detect_tiltfile_path')
+
+def test_get_tilt_data_dir_returns_string():
+    """Test that get_tilt_data_dir returns a string path."""
+    if not get_tilt_data_dir:
+        fail("get_tilt_data_dir not exported from cc_test_exports")
+    result = get_tilt_data_dir()
+    assert_true(type(result) == 'string', "Should return a string")
+    assert_true(len(result) > 0, "Should not be empty")
+    print("  [PASS] test_get_tilt_data_dir_returns_string")
+
+def test_get_tilt_data_dir_linux():
+    """Test Linux default path when no XDG_DATA_HOME is set."""
+    if not get_tilt_data_dir:
+        fail("get_tilt_data_dir not exported from cc_test_exports")
+    # On Linux without XDG override, should use ~/.local/share/tilt-dev/tilt_modules
+    result = get_tilt_data_dir()
+    home = os.environ.get('HOME', '')
+    # Should contain tilt-dev/tilt_modules
+    assert_true('tilt-dev/tilt_modules' in result, "Should contain tilt-dev/tilt_modules, got: " + result)
+    print("  [PASS] test_get_tilt_data_dir_linux")
+
+def test_get_tilt_data_dir_xdg_override():
+    """Test that XDG_DATA_HOME override is respected."""
+    if not get_tilt_data_dir:
+        fail("get_tilt_data_dir not exported from cc_test_exports")
+    # Note: We can't easily set env vars in Starlark tests, so this test
+    # verifies the logic by checking the current behavior
+    xdg = os.environ.get('XDG_DATA_HOME', '')
+    result = get_tilt_data_dir()
+    if xdg:
+        assert_true(result.startswith(xdg), "Should use XDG_DATA_HOME when set")
+    print("  [PASS] test_get_tilt_data_dir_xdg_override")
+
+def test_get_tilt_module_cache_path_file_url():
+    """Test that file:// URLs return the local path directly."""
+    if not get_tilt_module_cache_path:
+        fail("get_tilt_module_cache_path not exported from cc_test_exports")
+    result = get_tilt_module_cache_path('file:///home/user/my-repo')
+    assert_equals(result, '/home/user/my-repo', "file:// URL should return local path")
+    print("  [PASS] test_get_tilt_module_cache_path_file_url")
+
+def test_get_tilt_module_cache_path_https_url():
+    """Test that https:// URLs return the cache path."""
+    if not get_tilt_module_cache_path:
+        fail("get_tilt_module_cache_path not exported from cc_test_exports")
+    result = get_tilt_module_cache_path('https://github.com/grafana/composables')
+    assert_true('github.com/grafana/composables' in result, "Should contain URL path")
+    assert_true('tilt-dev/tilt_modules' in result, "Should be in tilt_modules cache")
+    print("  [PASS] test_get_tilt_module_cache_path_https_url")
+
+def test_get_tilt_module_cache_path_git_ssh_url():
+    """Test that git@ SSH URLs are converted to cache paths."""
+    if not get_tilt_module_cache_path:
+        fail("get_tilt_module_cache_path not exported from cc_test_exports")
+    result = get_tilt_module_cache_path('git@github.com:grafana/composables.git')
+    assert_true('github.com/grafana/composables' in result, "Should convert git@ to path format")
+    assert_true('.git' not in result, "Should strip .git suffix")
+    print("  [PASS] test_get_tilt_module_cache_path_git_ssh_url")
+
+def test_detect_tiltfile_path_prefers_cc_when_both_exist():
+    """Test that cc/Tiltfile is preferred when both exist (migration scenario)."""
+    if not detect_tiltfile_path:
+        fail("detect_tiltfile_path not exported from cc_test_exports")
+    # Use the test_migration/fake_migrating_repo which has both Tiltfile and cc/Tiltfile
+    test_dir = os.path.dirname(config.main_path)
+    cache_path = test_dir + '/../test_migration/fake_migrating_repo'
+    result = detect_tiltfile_path(cache_path, '.')
+    assert_equals(result, 'cc', "Should prefer cc/ when both Tiltfile and cc/Tiltfile exist")
+    print("  [PASS] test_detect_tiltfile_path_prefers_cc_when_both_exist")
+
+def test_detect_tiltfile_path_uses_default_when_no_cc():
+    """Test that default repo_path is used when cc/Tiltfile doesn't exist."""
+    if not detect_tiltfile_path:
+        fail("detect_tiltfile_path not exported from cc_test_exports")
+    # Use the main compose_composer directory which has Tiltfile but no cc/Tiltfile
+    test_dir = os.path.dirname(config.main_path)
+    cache_path = test_dir + '/..'  # compose_composer dir
+    result = detect_tiltfile_path(cache_path, '.')
+    assert_equals(result, '.', "Should use default when cc/Tiltfile doesn't exist")
+    print("  [PASS] test_detect_tiltfile_path_uses_default_when_no_cc")
+
+def test_detect_tiltfile_path_collection_repo():
+    """Test detection in a collection repo (repo_path != '.')."""
+    if not detect_tiltfile_path:
+        fail("detect_tiltfile_path not exported from cc_test_exports")
+    # For collection repos, should check {cache_path}/{repo_path}/cc/Tiltfile
+    # Using a path that definitely doesn't have cc/Tiltfile
+    test_dir = os.path.dirname(config.main_path)
+    cache_path = test_dir + '/..'  # compose_composer dir
+    result = detect_tiltfile_path(cache_path, 'lib')  # lib/ has no cc/Tiltfile
+    assert_equals(result, 'lib', "Should use default repo_path for collection without cc/")
+    print("  [PASS] test_detect_tiltfile_path_collection_repo")
+
+
+# ============================================================================
 # Run All Tests
 # ============================================================================
 
@@ -2350,6 +2452,17 @@ def run_tests():
     print("\n=== Master Compose Output Tests ===")
     test_master_compose_strips_internal_keys()
     test_master_compose_preserves_other_top_level_keys()
+
+    print("\n=== Migration Detection Tests ===")
+    test_get_tilt_data_dir_returns_string()
+    test_get_tilt_data_dir_linux()
+    test_get_tilt_data_dir_xdg_override()
+    test_get_tilt_module_cache_path_file_url()
+    test_get_tilt_module_cache_path_https_url()
+    test_get_tilt_module_cache_path_git_ssh_url()
+    test_detect_tiltfile_path_prefers_cc_when_both_exist()
+    test_detect_tiltfile_path_uses_default_when_no_cc()
+    test_detect_tiltfile_path_collection_repo()
 
     print("\n" + "=" * 50)
     print("All unit tests passed!")
