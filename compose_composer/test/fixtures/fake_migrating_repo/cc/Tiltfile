@@ -1,0 +1,23 @@
+# New compose_composer-compatible Tiltfile
+# This file should be preferred over the legacy ../Tiltfile when both exist.
+
+def cc_export(cc=None):
+    """Export a minimal plugin for testing migration detection."""
+    if cc:
+        return cc.create(
+            name='fake-migrating-plugin',
+            compose_path='./compose.yaml',
+        )
+    return struct(
+        name='fake-migrating-plugin',
+        compose_path='./compose.yaml',
+        dependencies=[],
+        profiles=[],
+        labels={},
+        modifications=[],
+        resource_deps=[],
+        _is_local=False,
+        _from_cli=False,
+        _symbols={},
+        _compose_overrides_param={},
+    )

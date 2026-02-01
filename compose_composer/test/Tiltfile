@@ -2239,9 +2239,9 @@ def test_detect_tiltfile_path_prefers_cc_when_both_exist():
     """Test that cc/Tiltfile is preferred when both exist (migration scenario)."""
     if not detect_tiltfile_path:
         fail("detect_tiltfile_path not exported from cc_test_exports")
-    # Use the test_migration/fake_migrating_repo which has both Tiltfile and cc/Tiltfile
+    # Use the fixtures/fake_migrating_repo which has both Tiltfile and cc/Tiltfile
     test_dir = os.path.dirname(config.main_path)
-    cache_path = test_dir + '/../test_migration/fake_migrating_repo'
+    cache_path = test_dir + '/fixtures/fake_migrating_repo'
     result = detect_tiltfile_path(cache_path, '.')
     assert_equals(result, 'cc', "Should prefer cc/ when both Tiltfile and cc/Tiltfile exist")
     print("  [PASS] test_detect_tiltfile_path_prefers_cc_when_both_exist")

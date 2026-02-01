@@ -1,0 +1,5 @@
+# Legacy Tiltfile - should NOT be loaded when cc/Tiltfile exists
+# This file exists to test migration detection: when both this file and cc/Tiltfile
+# exist, compose_composer should prefer cc/Tiltfile.
+
+fail("ERROR: Legacy Tiltfile was loaded instead of cc/Tiltfile. Migration detection failed!")
