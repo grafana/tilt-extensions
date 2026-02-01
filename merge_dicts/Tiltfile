@@ -1,0 +1,10 @@
+def merge_dicts(a, b, path=[]):
+    for key in b:
+        if key in a:
+            if type(a[key]) == 'dict' and type(b[key]) == 'dict':
+                merge_dicts(a[key], b[key], path + [str(key)])
+            elif a[key] != b[key]:
+                print('merge_dicts: key Conflict at ' + '.'.join(path + [str(key)]))
+        else:
+            a[key] = b[key]
+    return a

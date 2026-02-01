@@ -1,0 +1,64 @@
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - main
+      - compose-composer
+  push:
+    branches:
+      - main
+      - compose-composer
+
+jobs:
+  test-compose-composer:
+    name: Test compose_composer Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
+      - name: Verify Tilt installation
+        run: |
+          tilt version
+
+      - name: Run compose_composer tests
+        working-directory: ./compose_composer
+        run: |
+          make test
+
+      - name: Test results
+        if: always()
+        run: |
+          echo "Test suite completed"
+
+  test-var-subst:
+    name: Test var_subst Extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Tilt
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
+      - name: Verify Tilt installation
+        run: |
+          tilt version
+
+      - name: Run var_subst tests
+        working-directory: ./var_subst
+        run: |
+          make test
+
+      - name: Test results
+        if: always()
+        run: |
+          echo "Test suite completed"

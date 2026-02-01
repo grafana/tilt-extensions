@@ -1,0 +1,222 @@
+# Dependency Graph Utilities for compose_composer
+#
+# This module provides dependency tree operations:
+# - Struct to dict conversion for plugin structs
+# - Modification application (cross-plugin compose_overrides)
+# - Dependency tree flattening with deduplication and profile filtering
+#
+# All functions are prefixed with underscore to indicate internal use only.
+
+# Must be loaded by caller
+# load('./lib/utils.tilt', 'util')
+# load('./lib/profiles.tilt', 'profiles')
+
+# ============================================================================
+# Struct Conversion
+# ============================================================================
+
+def _struct_to_dict(dep_struct, util):
+    """
+    Convert a dependency struct to a dict for internal processing.
+
+    Structs from cc_import(), cc_create(), or cc_parse_cli_plugins() need
+    to be converted to dicts for the internal processing pipeline.
+
+    Args:
+        dep_struct: Plugin struct with name, compose_path, dependencies, etc.
+        util: Utility module (for deep_merge if needed)
+
+    Returns:
+        Dict representation of the plugin with all fields extracted
+    """
+    # Handle modifications as either a method (new cc_create) or list
+    mods = getattr(dep_struct, 'modifications', [])
+    modifications = mods() if type(mods) == 'function' else mods
+
+    result = {
+        'name': dep_struct.name,
+        '_compose_overrides_param': getattr(dep_struct, '_compose_overrides_param', {}),
+        'profiles': getattr(dep_struct, 'profiles', []),
+        'labels': getattr(dep_struct, 'labels', []),
+        'resource_deps': getattr(dep_struct, 'resource_deps', []),
+        'modifications': modifications,
+        '_from_cli': dep_struct._from_cli,
+        '_is_local': getattr(dep_struct, '_is_local', False),
+    }
+
+    # Handle local_compose structs
+    if getattr(dep_struct, '_is_local', False):
+        result['compose_path'] = dep_struct.compose_path
+        result['dependencies'] = dep_struct.dependencies
+        result['symbols'] = dep_struct._symbols
+    else:
+        # Remote dependency
+        result['url'] = dep_struct.url
+        result['ref'] = dep_struct.ref
+        result['repo_path'] = dep_struct.repo_path
+        result['compose_path'] = getattr(dep_struct, 'compose_path', None)
+        result['dependencies'] = getattr(dep_struct, 'dependencies', [])
+        result['symbols'] = dep_struct._symbols
+
+    return result
+
+# ============================================================================
+# Modification Application
+# ============================================================================
+
+def _apply_modifications(dependencies, modifications, util):
+    """
+    Apply modification dicts to their target dependencies.
+
+    Each modification should have a '_target' field indicating which
+    dependency to modify, and a 'compose_overrides'-like structure.
+
+    Modifications are deep merged into the target's _compose_overrides_param.
+
+    Args:
+        dependencies: List of dependency dicts (from flatten)
+        modifications: List of modification dicts with _target field
+        util: Utility module for deep_merge
+
+    Side effects:
+        Modifies dependencies in place by updating _compose_overrides_param
+    """
+    # Build a map of dep name -> dep for quick lookup
+    dep_map = {}
+    for dep in dependencies:
+        dep_map[dep['name']] = dep
+
+    for mod in modifications:
+        if type(mod) != 'dict':
+            continue
+
+        target = mod.get('_target')
+        if not target:
+            print("  Warning: modification has no _target, skipping")
+            continue
+
+        if target not in dep_map:
+            print("  Warning: modification target '" + target + "' not in dependencies, skipping")
+            continue
+
+        dep = dep_map[target]
+
+        # Extract compose_overrides from modification (everything except _target)
+        mod_overrides = {}
+        for key in mod:
+            if not key.startswith('_'):
+                mod_overrides[key] = mod[key]
+
+        # Deep merge into existing compose_overrides
+        existing = dep.get('_compose_overrides_param', {})
+        dep['_compose_overrides_param'] = util.deep_merge(existing, mod_overrides)
+
+        print("  Applied modification to: " + target)
+
+# ============================================================================
+# Dependency Tree Flattening
+# ============================================================================
+
+def _flatten(root, cli_plugins, util, profiles_module, active_profiles, seen_names=None):
+    """
+    Flatten a dependency tree into a list, preserving order (dependencies first).
+
+    Walks the tree depth-first, adding each unique dependency once.
+    Filters dependencies based on active profiles.
+    Returns a flat list suitable for compose assembly.
+
+    Args:
+        root: The root plugin struct (local_compose or dependency)
+        cli_plugins: Additional plugins from CLI
+        util: Utility module for deep_merge
+        profiles_module: Profile module for is_included()
+        active_profiles: List of active profile names
+        seen_names: Set of already-seen dependency names (for recursion)
+
+    Returns:
+        Flat list of dependency dicts, dependencies before dependents
+    """
+    if seen_names == None:
+        seen_names = {}
+
+    result = []
+
+    # Process root's dependencies first (depth-first)
+    root_dict = _struct_to_dict(root, util) if type(root) == 'struct' else root
+
+    for dep in root_dict.get('dependencies', []):
+        # Starlark: Check for None explicitly
+        if dep == None:
+            fail("Dependency list contains None in '" + root_dict.get('name', '<unknown>') + "'")
+
+        # Starlark: Use multiple conditions (no 'in' operator for types)
+        if type(dep) != 'struct' and type(dep) != 'dict':
+            fail("Invalid dependency type in '" + root_dict.get('name', '<unknown>') + "': expected struct or dict, got " + str(type(dep)))
+
+        dep_dict = _struct_to_dict(dep, util) if type(dep) == 'struct' else dep
+
+        # Check if dependency should be included based on profiles
+        dep_profiles = dep_dict.get('profiles', [])
+        if not profiles_module.is_included(dep_profiles, active_profiles):
+            print("    [profiles] Skipping " + dep_dict['name'] + " (profiles: " + str(dep_profiles) + ")")
+            continue
+
+        if dep_dict['name'] not in seen_names:
+            seen_names[dep_dict['name']] = dep_dict
+
+            # Recursively flatten this dependency's dependencies
+            nested = _flatten(dep, [], util, profiles_module, active_profiles, seen_names)
+            for n in nested:
+                if n['name'] not in [r['name'] for r in result]:
+                    result.append(n)
+
+            result.append(dep_dict)
+        else:
+            # Merge compose_overrides if we've seen this dep before
+            existing = seen_names[dep_dict['name']]
+            if dep_dict.get('_compose_overrides_param'):
+                existing['_compose_overrides_param'] = util.deep_merge(
+                    existing.get('_compose_overrides_param', {}),
+                    dep_dict['_compose_overrides_param']
+                )
+
+    # Add root itself (local plugin) - root is always included
+    if root_dict['name'] not in seen_names:
+        seen_names[root_dict['name']] = root_dict
+        result.append(root_dict)
+
+    # Process CLI plugins (they may bring their own dependency trees)
+    for cli_plugin in cli_plugins:
+        cli_dict = _struct_to_dict(cli_plugin, util) if type(cli_plugin) == 'struct' else cli_plugin
+
+        # Check if CLI plugin should be included based on profiles
+        cli_profiles = cli_dict.get('profiles', [])
+        if not profiles_module.is_included(cli_profiles, active_profiles):
+            print("    [profiles] Skipping CLI plugin " + cli_dict['name'] + " (profiles: " + str(cli_profiles) + ")")
+            continue
+
+        if cli_dict['name'] not in seen_names:
+            # Flatten CLI plugin's dependencies
+            nested = _flatten(cli_plugin, [], util, profiles_module, active_profiles, seen_names)
+            for n in nested:
+                if n['name'] not in [r['name'] for r in result]:
+                    result.append(n)
+
+    return result
+
+# ============================================================================
+# Public API - Export as struct for namespace-like access
+# ============================================================================
+
+# Export dependency graph utilities as a struct to enable dependency_graph.flatten() syntax
+# This is the standard Starlark pattern for creating namespaces
+dependency_graph = struct(
+    # Struct conversion
+    struct_to_dict = _struct_to_dict,
+
+    # Modification application
+    apply_modifications = _apply_modifications,
+
+    # Tree flattening
+    flatten = _flatten,
+)

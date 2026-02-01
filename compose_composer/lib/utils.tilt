@@ -1,0 +1,332 @@
+# Utility Functions for compose_composer
+#
+# This module contains pure utility functions with no external dependencies:
+# - Deep merge and copy operations
+# - URL parsing and validation
+# - Volume mount parsing and validation
+#
+# All functions are prefixed with underscore to indicate internal use only.
+
+# ============================================================================
+# Deep Merge Utility
+# ============================================================================
+
+# Known environment variables that should concatenate instead of replace
+_CONCAT_ENV_VARS = [
+    'WEBHOOK_OPERATORS',  # Multiple webhook operators (op1:ns1,op2:ns2)
+    'API_GROUPS',          # For future use with API aggregation
+    'GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS',  # Comma-separated plugin IDs
+    'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
+]
+
+def _should_concatenate_string(key, base_val, override_val):
+    """
+    Check if this string should be concatenated rather than replaced.
+
+    Used for environment variables like WEBHOOK_OPERATORS where multiple
+    plugins may each contribute values that should be accumulated.
+
+    Returns True if values should be concatenated with comma separator.
+    """
+    # Only for string values (Starlark type() returns "string", not str)
+    if type(base_val) != 'string' or type(override_val) != 'string':
+        return False
+
+    # Check if key is in known concat list
+    if key in _CONCAT_ENV_VARS:
+        return True
+
+    # Exclude URLs from concatenation - they should be replaced, not concatenated
+    # Check for the :// pattern which is common to most URL schemes
+    # (http://, https://, file://, ftp://, jdbc://, etc.)
+    if '://' in base_val or '://' in override_val:
+        return False
+
+    # Heuristic: both contain colon-separated values (like "name:namespace")
+    # This catches similar patterns even if not explicitly listed
+    if ':' in base_val and ':' in override_val:
+        return True
+
+    return False
+
+def _deep_merge(base, override):
+    """
+    Deep merge override into base.
+    - Dicts are merged recursively
+    - Lists are concatenated (for volumes, depends_on, etc.)
+    - Comma-separated strings are concatenated (for WEBHOOK_OPERATORS, etc.)
+    - Other values are replaced
+
+    Returns a new dict (does not modify base).
+    """
+    if type(base) != 'dict' or type(override) != 'dict':
+        return override
+
+    result = {}
+
+    # Start with all keys from base
+    for key in base:
+        result[key] = base[key]
+
+    # Merge/override with keys from override
+    for key in override:
+        if key in result:
+            base_type = type(result[key])
+            override_type = type(override[key])
+
+            if base_type == 'dict' and override_type == 'dict':
+                result[key] = _deep_merge(result[key], override[key])
+            elif base_type == 'list' and override_type == 'list':
+                # Concatenate lists, avoiding duplicates for simple values
+                merged = list(result[key])
+                for item in override[key]:
+                    if item not in merged:
+                        merged.append(item)
+                result[key] = merged
+            elif _should_concatenate_string(key, result[key], override[key]):
+                # Concatenate comma-separated strings (e.g., WEBHOOK_OPERATORS)
+                base_val = result[key]
+                override_val = override[key]
+                base_items = base_val.split(',') if base_val else []
+                override_items = override_val.split(',') if override_val else []
+
+                # Combine and deduplicate
+                combined = list(base_items)
+                for item in override_items:
+                    if item and item not in combined:
+                        combined.append(item)
+
+                result[key] = ','.join(combined)
+            else:
+                result[key] = override[key]
+        else:
+            result[key] = override[key]
+
+    return result
+
+def _deep_copy(obj):
+    """
+    Create a deep copy of a dict/list structure using YAML round-trip.
+
+    Starlark note: This approach is intentional because:
+    1. Starlark has no native deep copy function
+    2. YAML round-trip preserves all compose-compatible types
+    3. Performance trade-off: correctness > speed for this use case
+    4. Alternative (recursive copy) would be complex and error-prone
+
+    This method ensures proper isolation between base and override dicts
+    during merge operations, preventing unintended mutations.
+    """
+    return decode_yaml(encode_yaml(obj))
+
+# ============================================================================
+# URL Utilities
+# ============================================================================
+
+def _is_url(s):
+    """Check if string is a URL (git or https)."""
+    return '://' in s or s.startswith('git@')
+
+def _parse_url_with_ref(url):
+    """
+    Parse a URL with optional @ref suffix for git repositories.
+
+    Supports encoding git refs (branch, tag, or commit) directly in the URL
+    using @ separator, following Go modules convention.
+
+    Args:
+        url: URL string, optionally with @ref suffix
+
+    Returns:
+        Tuple of (url_without_ref, ref_or_none)
+
+    Examples:
+        'https://github.com/grafana/composables@v1.2.3'
+          -> ('https://github.com/grafana/composables', 'v1.2.3')
+
+        'https://github.com/grafana/composables@main'
+          -> ('https://github.com/grafana/composables', 'main')
+
+        'https://github.com/grafana/composables'
+          -> ('https://github.com/grafana/composables', None)
+
+        'file:///path/to/composables'
+          -> ('file:///path/to/composables', None)
+
+    Note: file:// URLs never have refs, so @ is never parsed for file URLs.
+    """
+    # file:// URLs don't support refs
+    if url.startswith('file://'):
+        return (url, None)
+
+    # Split on last @ to handle SSH URLs like git@github.com:user/repo@ref
+    if '@' in url:
+        parts = url.rsplit('@', 1)
+        if len(parts) == 2 and parts[1]:  # Ensure ref part is not empty
+            return (parts[0], parts[1])
+
+    return (url, None)
+
+# ============================================================================
+# Volume Mount Utilities
+# ============================================================================
+
+def _is_named_volume(vol_name):
+    """
+    Determine if volume source is a named volume vs bind mount.
+    Named volumes are Docker-managed; bind mounts are host paths.
+
+    Starlark: Uses string methods (startswith, in) which are fully supported.
+    """
+    if not vol_name:
+        return False
+
+    # Absolute unix paths (bind mount)
+    if vol_name.startswith('/'):
+        return False
+
+    # Relative paths (bind mount)
+    if vol_name.startswith('.'):
+        return False
+
+    # Windows paths: C:, D:, etc. (bind mount)
+    # Starlark: len() is supported
+    if len(vol_name) >= 2 and vol_name[1] == ':':
+        return False
+
+    # UNC paths: \\server\share (bind mount)
+    if vol_name.startswith('\\\\'):
+        return False
+
+    # Environment variables (dynamic bind mount)
+    if '${' in vol_name or '$(' in vol_name:
+        return False
+
+    # Tilde expansion (bind mount)
+    if vol_name.startswith('~'):
+        return False
+
+    # If none of the above, it's a named volume
+    return True
+
+def _parse_volume_mount(volume_spec):
+    """
+    Parse Docker volume mount: [source:]target[:mode]
+    Returns: {'source': str|None, 'target': str, 'mode': str|None}
+    """
+    if not volume_spec or type(volume_spec) != 'string':
+        return {'source': None, 'target': '', 'mode': None}
+
+    parts = volume_spec.split(':')
+
+    if len(parts) == 1:
+        return {'source': None, 'target': parts[0], 'mode': None}
+    elif len(parts) == 2:
+        # Disambiguate: if second part is ro/rw/z/Z, it's target:mode
+        if parts[1] in ['ro', 'rw', 'z', 'Z']:
+            return {'source': None, 'target': parts[0], 'mode': parts[1]}
+        else:
+            return {'source': parts[0], 'target': parts[1], 'mode': None}
+    else:
+        return {'source': parts[0], 'target': parts[1], 'mode': parts[2] if len(parts) > 2 else None}
+
+def _validate_volume_mounts(services_dict, plugin_name):
+    """
+    Validate no service has duplicate volume mounts to same target.
+    Fails with detailed error if conflicts detected.
+    """
+    for service_name, service_config in services_dict.items():
+        if type(service_config) != 'dict':
+            continue
+
+        volumes = service_config.get('volumes', [])
+        if not volumes:
+            continue
+
+        # Map target -> list of sources
+        target_to_sources = {}
+
+        for volume_spec in volumes:
+            parsed = _parse_volume_mount(str(volume_spec))
+            target = parsed['target']
+            source = parsed['source'] if parsed['source'] else '(container-only)'
+
+            if not target:
+                continue
+
+            if target not in target_to_sources:
+                target_to_sources[target] = []
+
+            target_to_sources[target].append({
+                'source': source,
+                'full_spec': str(volume_spec),
+            })
+
+        # Check for conflicts
+        for target, sources in target_to_sources.items():
+            if len(sources) > 1:
+                unique_sources = {}
+                for s in sources:
+                    unique_sources[s['source']] = s['full_spec']
+
+                if len(unique_sources) > 1:
+                    error_lines = [
+                        "",
+                        "=" * 70,
+                        "ERROR: Duplicate volume mount detected",
+                        "=" * 70,
+                        "",
+                        "Service: " + service_name,
+                        "Target path: " + target,
+                        "",
+                        "Conflicting sources:",
+                    ]
+
+                    for idx, (src, spec) in enumerate(unique_sources.items(), 1):
+                        error_lines.append("  " + str(idx) + ". " + src)
+                        error_lines.append("     Full spec: " + spec)
+
+                    error_lines.extend([
+                        "",
+                        "This indicates multiple plugins are trying to mount different",
+                        "sources to the same container path. Docker Compose behavior is",
+                        "undefined in this case.",
+                        "",
+                        "Common causes:",
+                        "  - Plugin registered in multiple places (orchestrator + self-registration)",
+                        "  - Two plugins both registering the same plugin ID",
+                        "  - Copy-paste error in Tiltfile",
+                        "",
+                        "Resolution:",
+                        "  - Ensure each plugin only registers itself once",
+                        "  - Use cc_import to load plugins, not manual registration",
+                        "  - Check for grafana.register_plugin() calls in multiple Tiltfiles",
+                        "",
+                        "Plugin being validated: " + plugin_name,
+                        "=" * 70,
+                    ])
+
+                    fail("\n".join(error_lines))
+
+# ============================================================================
+# Public API - Export as struct for namespace-like access
+# ============================================================================
+
+# Export utilities as a struct to enable util.deep_merge() syntax
+# This is the standard Starlark pattern for creating namespaces
+util = struct(
+    # Deep merge utilities
+    deep_merge = _deep_merge,
+    deep_copy = _deep_copy,
+    should_concatenate_string = _should_concatenate_string,
+    CONCAT_ENV_VARS = _CONCAT_ENV_VARS,
+
+    # URL utilities
+    is_url = _is_url,
+    parse_url_with_ref = _parse_url_with_ref,
+
+    # Volume mount utilities
+    is_named_volume = _is_named_volume,
+    parse_volume_mount = _parse_volume_mount,
+    validate_volume_mounts = _validate_volume_mounts,
+)
