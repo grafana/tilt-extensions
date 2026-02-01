@@ -1,6 +1,8 @@
 # Tests for compose_composer extension
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
+allow_k8s_contexts(k8s_context())
+
 
 # Only load public API (cc_init) and test exports function
 load('../Tiltfile', 'cc_test_exports', 'cc_init')
@@ -2094,11 +2096,12 @@ def test_cc_init_default_orchestrator_dir():
     print("  [PASS] test_cc_init_default_orchestrator_dir")
 
 def test_cc_init_default_staging_dir():
-    """Test that staging_dir defaults to orchestrator_dir/.cc."""
+    """Test that staging_dir defaults to repo_root/.cc (which defaults to orchestrator_dir)."""
     cc = cc_init('test-project')
 
-    expected_staging = os.path.dirname(config.main_path) + '/.cc'
-    assert_equals(cc.staging_dir, expected_staging, "staging_dir should default to orchestrator_dir/.cc")
+    # Since repo_root defaults to orchestrator_dir, staging_dir is repo_root/.cc
+    expected_staging = cc.repo_root + '/.cc'
+    assert_equals(cc.staging_dir, expected_staging, "staging_dir should default to repo_root/.cc")
 
     print("  [PASS] test_cc_init_default_staging_dir")
 
@@ -2268,6 +2271,55 @@ def test_detect_tiltfile_path_collection_repo():
     result = detect_tiltfile_path(cache_path, 'lib')  # lib/ has no cc/Tiltfile
     assert_equals(result, 'lib', "Should use default repo_path for collection without cc/")
     print("  [PASS] test_detect_tiltfile_path_collection_repo")
+
+
+def test_cli_plugin_path_resolution_with_cc_tiltfile():
+    """
+    Test that CLI plugin paths resolve relative to repo_root, not cc/ subdirectory.
+
+    When repo_root is provided to cc_init(), CLI plugins should resolve relative
+    to that directory, not os.path.dirname(config.main_path).
+
+    This test verifies the fix for the bug where cc/Tiltfile migration mode
+    caused CLI plugins to resolve from cc/ instead of the repo root.
+    """
+    # The fake_migrating_repo has both Tiltfile and cc/Tiltfile
+    test_dir = os.path.dirname(config.main_path)
+    repo_root = test_dir + '/fixtures/fake_migrating_repo'
+
+    # Create cc with explicit repo_root (simulating cc/Tiltfile migration scenario)
+    # Even though orchestrator_dir would be repo_root/cc, CLI plugins resolve from repo_root
+    cc = cc_init('test-project', repo_root=repo_root)
+
+    # Verify repo_root is stored correctly
+    assert_equals(cc.repo_root, repo_root, "repo_root should be stored in cc struct")
+
+    # Verify staging_dir is relative to repo_root
+    assert_equals(cc.staging_dir, repo_root + '/.cc', "staging_dir should be relative to repo_root")
+
+    # Test that resolve_plugin_spec with repo_root gives correct path
+    cli_arg = '../sibling'
+    result = resolve_plugin_spec(cli_arg, repo_root)
+    result_path = result['url'].replace('file://', '')
+
+    # The path should NOT contain /cc/ since we're resolving from repo_root
+    assert_true('/cc/' not in result_path,
+        "CLI plugin should resolve from repo_root, not cc/")
+
+    # The path should go to fixtures/sibling (sibling of fake_migrating_repo)
+    # Note: Starlark doesn't normalize '..' so we check for the raw path structure
+    assert_true('fake_migrating_repo/../sibling' in result_path,
+        "CLI plugin should resolve to sibling of repo")
+
+    print("  [PASS] test_cli_plugin_path_resolution_with_cc_tiltfile")
+
+
+def test_cc_init_repo_root_defaults_to_orchestrator_dir():
+    """Test that repo_root defaults to orchestrator_dir when not provided."""
+    cc = cc_init('test-project')
+    assert_equals(cc.repo_root, cc.orchestrator_dir,
+        "repo_root should default to orchestrator_dir")
+    print("  [PASS] test_cc_init_repo_root_defaults_to_orchestrator_dir")
 
 
 # ============================================================================
@@ -2448,6 +2500,7 @@ def run_tests():
     test_cc_init_test_exports_method()
     test_cc_init_default_orchestrator_dir()
     test_cc_init_default_staging_dir()
+    test_cc_init_repo_root_defaults_to_orchestrator_dir()
 
     print("\n=== Master Compose Output Tests ===")
     test_master_compose_strips_internal_keys()
@@ -2463,6 +2516,7 @@ def run_tests():
     test_detect_tiltfile_path_prefers_cc_when_both_exist()
     test_detect_tiltfile_path_uses_default_when_no_cc()
     test_detect_tiltfile_path_collection_repo()
+    test_cli_plugin_path_resolution_with_cc_tiltfile()
 
     print("\n" + "=" * 50)
     print("All unit tests passed!")

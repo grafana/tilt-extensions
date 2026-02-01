@@ -1504,6 +1504,7 @@ def cc_init(
     composables_url=None,
     staging_dir=None,
     orchestrator_dir=None,
+    repo_root=None,
 ):
     """
     Initialize compose_composer and return a struct with bound methods.
@@ -1516,9 +1517,14 @@ def cc_init(
         composables_url: Default URL for import() when url parameter is not provided.
                         Falls back to COMPOSABLES_URL env var or default.
         staging_dir: Default staging directory for generated files.
-                    Falls back to {orchestrator_dir}/.cc
+                    Falls back to {repo_root}/.cc
         orchestrator_dir: Directory of the orchestrating Tiltfile.
                          Falls back to os.path.dirname(config.main_path).
+        repo_root: Root directory of the repository for CLI plugin resolution.
+                  Used when cc/Tiltfile is the entry point but CLI plugins should
+                  resolve relative to the repo root, not cc/.
+                  Falls back to orchestrator_dir if not provided.
+                  # TODO: Remove this parameter when migration paths are no longer needed.
 
     Returns:
         struct with:
@@ -1526,6 +1532,7 @@ def cc_init(
           - composables_url: Resolved default composables URL
           - staging_dir: Resolved staging directory
           - orchestrator_dir: Resolved orchestrator directory
+          - repo_root: Resolved repo root directory for CLI plugin resolution
           - composables(): Returns dict of loaded composables (keyed by name)
           - use(): Load remote composable (bound version of cc_import)
           - create(): Declare local plugin (bound version of cc_create)
@@ -1558,10 +1565,18 @@ def cc_init(
     if _orchestrator_dir == None:
         _orchestrator_dir = os.path.dirname(config.main_path)
 
-    # staging_dir defaults to orchestrator_dir/.cc
+    # repo_root defaults to orchestrator_dir
+    # TODO: Remove repo_root parameter when migration paths are no longer needed.
+    # This exists to support cc/Tiltfile migration where CLI plugins should resolve
+    # relative to the repo root, not the cc/ subdirectory.
+    _repo_root = repo_root
+    if _repo_root == None:
+        _repo_root = _orchestrator_dir
+
+    # staging_dir defaults to repo_root/.cc (not orchestrator_dir)
     _staging_dir = staging_dir
     if _staging_dir == None:
-        _staging_dir = _orchestrator_dir + '/.cc'
+        _staging_dir = _repo_root + '/.cc'
 
     # Mutable container pattern: allows bound methods to access cc struct
     # The dict is captured by closure, then populated after struct creation
@@ -1603,7 +1618,10 @@ def cc_init(
         )
 
     def _parse_cli_plugins(tiltfile_dir=None):
-        return _cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
+        # Use repo_root for CLI plugin resolution (supports cc/Tiltfile migration)
+        # TODO: Remove repo_root logic when migration paths are no longer needed.
+        actual_tiltfile_dir = tiltfile_dir if tiltfile_dir != None else _repo_root
+        return _cc_parse_cli_plugins(actual_tiltfile_dir, cc=_cc_holder['cc'])
 
     def _docker_compose(master_compose, **kwargs):
         return _cc_docker_compose(master_compose, project_name=_name, **kwargs)
@@ -1631,6 +1649,7 @@ def cc_init(
         'composables_url': _composables_url,
         'staging_dir': _staging_dir,
         'orchestrator_dir': _orchestrator_dir,
+        'repo_root': _repo_root,  # TODO: Remove when migration paths are no longer needed.
 
         # Composables dict (mutable, populated by use())
         'composables': _get_composables,
