@@ -574,6 +574,56 @@ def _detect_tiltfile_path(cache_path, default_repo_path):
     return default_repo_path
 
 
+def _ensure_repo_cloned(cache_path, name, url, ref):
+    """
+    Ensure the extension repo has been cloned to cache_path.
+
+    Tilt's v1alpha1.extension_repo() only registers a repo - the actual clone
+    happens when v1alpha1.extension() is called. But we need the repo cloned
+    BEFORE extension() to check for cc/Tiltfile migration.
+
+    This function clones the repo using git directly if it doesn't exist.
+
+    Args:
+        cache_path: Path where Tilt caches the repo
+        name: Extension name (for log messages)
+        url: Git URL to clone from
+        ref: Git ref (branch/tag) to checkout
+
+    Note:
+        When Tilt later calls extension() with extension_repo(), Tilt will
+        find the repo already exists and skip cloning.
+    """
+    if os.path.exists(cache_path):
+        return  # Already cloned
+
+    # Tilt's extension_repo() doesn't clone immediately - it only registers the repo.
+    # The clone happens when extension() is called, but we need the repo NOW to check
+    # for cc/Tiltfile. So we clone it ourselves using git.
+    print("[compose_composer] Pre-cloning '" + name + "' for migration detection...")
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(cache_path)
+    local('mkdir -p "' + parent_dir + '"', quiet=True)
+
+    # Clone the repo with the specified ref
+    # Use --depth=1 for faster cloning (we only need to check for cc/Tiltfile)
+    # Use --single-branch to only fetch the specific ref
+    # Use '|| true' to prevent local() from failing if git clone fails
+    actual_ref = ref if ref else 'main'
+    clone_cmd = 'git clone --depth=1 --single-branch --branch "' + actual_ref + '" "' + url + '" "' + cache_path + '" 2>&1 || true'
+
+    local(clone_cmd, quiet=True)
+
+    if not os.path.exists(cache_path):
+        print("[compose_composer] Warning: Failed to pre-clone '" + name + "' for migration detection")
+        print("[compose_composer] Will fall back to default repo_path. To use cc/Tiltfile,")
+        print("[compose_composer] specify repo_path='cc' explicitly in cc.use()")
+        return
+
+    print("[compose_composer] Pre-cloned '" + name + "' to: " + cache_path)
+
+
 def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
     Internal function to import a composable with orchestrator context.
@@ -601,7 +651,10 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     url = parsed_url
     ref = final_ref
 
-    # Determine default repo_path
+    # Track if repo_path was explicitly provided (skips migration detection)
+    explicit_repo_path = repo_path != None
+
+    # Determine default repo_path if not explicitly provided
     if repo_path == None:
         # Check if this is a standalone composable (URL ends with the name)
         # e.g., https://github.com/grafana/gamma with name='gamma' -> repo_path='.'
@@ -629,11 +682,20 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
 
     # Migration detection: After repo is cached, check if cc/Tiltfile exists
     # If both Tiltfile and cc/Tiltfile exist, prefer cc/Tiltfile
-    cache_path = _get_tilt_module_cache_path(url)
-    actual_repo_path = _detect_tiltfile_path(cache_path, repo_path)
+    # Skip this if repo_path was explicitly provided (user knows what they want)
+    actual_repo_path = repo_path
+    if not explicit_repo_path:
+        cache_path = _get_tilt_module_cache_path(url)
 
-    if actual_repo_path != repo_path:
-        print("[compose_composer] Migration detected for '" + name + "': using " + actual_repo_path + "/Tiltfile")
+        # For git URLs, ensure repo is cloned before checking for cc/Tiltfile
+        # file:// URLs don't need this since the path already exists locally
+        if not url.startswith('file://'):
+            _ensure_repo_cloned(cache_path, name, url, ref)
+
+        actual_repo_path = _detect_tiltfile_path(cache_path, repo_path)
+
+        if actual_repo_path != repo_path:
+            print("[compose_composer] Migration detected for '" + name + "': using " + actual_repo_path + "/Tiltfile")
 
     v1alpha1.extension(name=name, repo_name=repo_name, repo_path=actual_repo_path)
     symbols = load_dynamic('ext://' + name)
@@ -1728,4 +1790,5 @@ def cc_test_exports():
         'get_tilt_data_dir': _get_tilt_data_dir,
         'get_tilt_module_cache_path': _get_tilt_module_cache_path,
         'detect_tiltfile_path': _detect_tiltfile_path,
+        'ensure_repo_cloned': _ensure_repo_cloned,
     }
