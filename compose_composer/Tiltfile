@@ -576,13 +576,16 @@ def _detect_tiltfile_path(cache_path, default_repo_path):
 
 def _ensure_repo_cloned(cache_path, name, url, ref):
     """
-    Ensure the extension repo has been cloned to cache_path.
+    Ensure the extension repo has been cloned to cache_path and is up-to-date.
 
     Tilt's v1alpha1.extension_repo() only registers a repo - the actual clone
     happens when v1alpha1.extension() is called. But we need the repo cloned
     BEFORE extension() to check for cc/Tiltfile migration.
 
-    This function clones the repo using git directly if it doesn't exist.
+    This function:
+    - Clones the repo using git directly if it doesn't exist
+    - If the repo exists, attempts to fetch the latest from upstream
+    - Gracefully handles network failures (uses cached version if fetch fails)
 
     Args:
         cache_path: Path where Tilt caches the repo
@@ -594,8 +597,16 @@ def _ensure_repo_cloned(cache_path, name, url, ref):
         When Tilt later calls extension() with extension_repo(), Tilt will
         find the repo already exists and skip cloning.
     """
+    actual_ref = ref if ref else 'main'
+
     if os.path.exists(cache_path):
-        return  # Already cloned
+        # Repo exists - try to fetch latest from upstream
+        # This handles the case where @main or other refs have new commits
+        # Use fetch + reset to update shallow clones properly
+        # The '|| true' ensures we don't fail if network is unavailable
+        fetch_cmd = 'cd "' + cache_path + '" && git fetch --depth=1 origin "' + actual_ref + '" && git reset --hard FETCH_HEAD 2>&1 || true'
+        local(fetch_cmd, quiet=True)
+        return
 
     # Tilt's extension_repo() doesn't clone immediately - it only registers the repo.
     # The clone happens when extension() is called, but we need the repo NOW to check
@@ -610,7 +621,6 @@ def _ensure_repo_cloned(cache_path, name, url, ref):
     # Use --depth=1 for faster cloning (we only need to check for cc/Tiltfile)
     # Use --single-branch to only fetch the specific ref
     # Use '|| true' to prevent local() from failing if git clone fails
-    actual_ref = ref if ref else 'main'
     clone_cmd = 'git clone --depth=1 --single-branch --branch "' + actual_ref + '" "' + url + '" "' + cache_path + '" 2>&1 || true'
 
     local(clone_cmd, quiet=True)
