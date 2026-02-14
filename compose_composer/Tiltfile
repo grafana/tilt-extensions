@@ -1787,6 +1787,7 @@ def cc_test_exports():
         'cc_parse_cli_plugins': _cc_parse_cli_plugins,
         'cc_docker_compose': _cc_docker_compose,
         'get_active_profiles': _cc_get_active_profiles,
+        'normalize_depends_on': util.normalize_depends_on,
         # Other utilities
         'parse_url_with_ref': util.parse_url_with_ref,
         'get_compose_path_from_dep': _get_compose_path_from_dep,
