@@ -661,8 +661,10 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     url = parsed_url
     ref = final_ref
 
-    # Track if repo_path was explicitly provided (skips migration detection)
-    explicit_repo_path = repo_path != None
+    # Track if repo_path was explicitly provided (skips migration detection).
+    # repo_path='.' is the auto-default for standalone repos, not a user override,
+    # so treat it the same as None to allow migration detection (cc/Tiltfile preference).
+    explicit_repo_path = repo_path != None and repo_path != '.'
 
     # Determine default repo_path if not explicitly provided
     if repo_path == None:
