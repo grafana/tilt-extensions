@@ -574,6 +574,66 @@ def _detect_tiltfile_path(cache_path, default_repo_path):
     return default_repo_path
 
 
+def _ensure_repo_cloned(cache_path, name, url, ref):
+    """
+    Ensure the extension repo has been cloned to cache_path and is up-to-date.
+
+    Tilt's v1alpha1.extension_repo() only registers a repo - the actual clone
+    happens when v1alpha1.extension() is called. But we need the repo cloned
+    BEFORE extension() to check for cc/Tiltfile migration.
+
+    This function:
+    - Clones the repo using git directly if it doesn't exist
+    - If the repo exists, attempts to fetch the latest from upstream
+    - Gracefully handles network failures (uses cached version if fetch fails)
+
+    Args:
+        cache_path: Path where Tilt caches the repo
+        name: Extension name (for log messages)
+        url: Git URL to clone from
+        ref: Git ref (branch/tag) to checkout
+
+    Note:
+        When Tilt later calls extension() with extension_repo(), Tilt will
+        find the repo already exists and skip cloning.
+    """
+    actual_ref = ref if ref else 'main'
+
+    if os.path.exists(cache_path):
+        # Repo exists - try to fetch latest from upstream
+        # This handles the case where @main or other refs have new commits
+        # Use fetch + reset to update shallow clones properly
+        # The '|| true' ensures we don't fail if network is unavailable
+        fetch_cmd = 'cd "' + cache_path + '" && git fetch --depth=1 origin "' + actual_ref + '" && git reset --hard FETCH_HEAD 2>&1 || true'
+        local(fetch_cmd, quiet=True)
+        return
+
+    # Tilt's extension_repo() doesn't clone immediately - it only registers the repo.
+    # The clone happens when extension() is called, but we need the repo NOW to check
+    # for cc/Tiltfile. So we clone it ourselves using git.
+    print("[compose_composer] Pre-cloning '" + name + "' for migration detection...")
+
+    # Ensure parent directory exists
+    parent_dir = os.path.dirname(cache_path)
+    local('mkdir -p "' + parent_dir + '"', quiet=True)
+
+    # Clone the repo with the specified ref
+    # Use --depth=1 for faster cloning (we only need to check for cc/Tiltfile)
+    # Use --single-branch to only fetch the specific ref
+    # Use '|| true' to prevent local() from failing if git clone fails
+    clone_cmd = 'git clone --depth=1 --single-branch --branch "' + actual_ref + '" "' + url + '" "' + cache_path + '" 2>&1 || true'
+
+    local(clone_cmd, quiet=True)
+
+    if not os.path.exists(cache_path):
+        print("[compose_composer] Warning: Failed to pre-clone '" + name + "' for migration detection")
+        print("[compose_composer] Will fall back to default repo_path. To use cc/Tiltfile,")
+        print("[compose_composer] specify repo_path='cc' explicitly in cc.use()")
+        return
+
+    print("[compose_composer] Pre-cloned '" + name + "' to: " + cache_path)
+
+
 def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compose_overrides={}, profiles=[], labels=[], resource_deps=[]):
     """
     Internal function to import a composable with orchestrator context.
@@ -601,7 +661,12 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
     url = parsed_url
     ref = final_ref
 
-    # Determine default repo_path
+    # Track if repo_path was explicitly provided (skips migration detection).
+    # repo_path='.' is the auto-default for standalone repos, not a user override,
+    # so treat it the same as None to allow migration detection (cc/Tiltfile preference).
+    explicit_repo_path = repo_path != None and repo_path != '.'
+
+    # Determine default repo_path if not explicitly provided
     if repo_path == None:
         # Check if this is a standalone composable (URL ends with the name)
         # e.g., https://github.com/grafana/gamma with name='gamma' -> repo_path='.'
@@ -629,11 +694,20 @@ def _cc_import_with_context(cc, name, url=None, ref=None, repo_path=None, compos
 
     # Migration detection: After repo is cached, check if cc/Tiltfile exists
     # If both Tiltfile and cc/Tiltfile exist, prefer cc/Tiltfile
-    cache_path = _get_tilt_module_cache_path(url)
-    actual_repo_path = _detect_tiltfile_path(cache_path, repo_path)
+    # Skip this if repo_path was explicitly provided (user knows what they want)
+    actual_repo_path = repo_path
+    if not explicit_repo_path:
+        cache_path = _get_tilt_module_cache_path(url)
 
-    if actual_repo_path != repo_path:
-        print("[compose_composer] Migration detected for '" + name + "': using " + actual_repo_path + "/Tiltfile")
+        # For git URLs, ensure repo is cloned before checking for cc/Tiltfile
+        # file:// URLs don't need this since the path already exists locally
+        if not url.startswith('file://'):
+            _ensure_repo_cloned(cache_path, name, url, ref)
+
+        actual_repo_path = _detect_tiltfile_path(cache_path, repo_path)
+
+        if actual_repo_path != repo_path:
+            print("[compose_composer] Migration detected for '" + name + "': using " + actual_repo_path + "/Tiltfile")
 
     v1alpha1.extension(name=name, repo_name=repo_name, repo_path=actual_repo_path)
     symbols = load_dynamic('ext://' + name)
@@ -1504,6 +1578,7 @@ def cc_init(
     composables_url=None,
     staging_dir=None,
     orchestrator_dir=None,
+    repo_root=None,
 ):
     """
     Initialize compose_composer and return a struct with bound methods.
@@ -1516,9 +1591,14 @@ def cc_init(
         composables_url: Default URL for import() when url parameter is not provided.
                         Falls back to COMPOSABLES_URL env var or default.
         staging_dir: Default staging directory for generated files.
-                    Falls back to {orchestrator_dir}/.cc
+                    Falls back to {repo_root}/.cc
         orchestrator_dir: Directory of the orchestrating Tiltfile.
                          Falls back to os.path.dirname(config.main_path).
+        repo_root: Root directory of the repository for CLI plugin resolution.
+                  Used when cc/Tiltfile is the entry point but CLI plugins should
+                  resolve relative to the repo root, not cc/.
+                  Falls back to orchestrator_dir if not provided.
+                  # TODO: Remove this parameter when migration paths are no longer needed.
 
     Returns:
         struct with:
@@ -1526,6 +1606,7 @@ def cc_init(
           - composables_url: Resolved default composables URL
           - staging_dir: Resolved staging directory
           - orchestrator_dir: Resolved orchestrator directory
+          - repo_root: Resolved repo root directory for CLI plugin resolution
           - composables(): Returns dict of loaded composables (keyed by name)
           - use(): Load remote composable (bound version of cc_import)
           - create(): Declare local plugin (bound version of cc_create)
@@ -1558,10 +1639,18 @@ def cc_init(
     if _orchestrator_dir == None:
         _orchestrator_dir = os.path.dirname(config.main_path)
 
-    # staging_dir defaults to orchestrator_dir/.cc
+    # repo_root defaults to orchestrator_dir
+    # TODO: Remove repo_root parameter when migration paths are no longer needed.
+    # This exists to support cc/Tiltfile migration where CLI plugins should resolve
+    # relative to the repo root, not the cc/ subdirectory.
+    _repo_root = repo_root
+    if _repo_root == None:
+        _repo_root = _orchestrator_dir
+
+    # staging_dir defaults to repo_root/.cc (not orchestrator_dir)
     _staging_dir = staging_dir
     if _staging_dir == None:
-        _staging_dir = _orchestrator_dir + '/.cc'
+        _staging_dir = _repo_root + '/.cc'
 
     # Mutable container pattern: allows bound methods to access cc struct
     # The dict is captured by closure, then populated after struct creation
@@ -1603,7 +1692,10 @@ def cc_init(
         )
 
     def _parse_cli_plugins(tiltfile_dir=None):
-        return _cc_parse_cli_plugins(tiltfile_dir, cc=_cc_holder['cc'])
+        # Use repo_root for CLI plugin resolution (supports cc/Tiltfile migration)
+        # TODO: Remove repo_root logic when migration paths are no longer needed.
+        actual_tiltfile_dir = tiltfile_dir if tiltfile_dir != None else _repo_root
+        return _cc_parse_cli_plugins(actual_tiltfile_dir, cc=_cc_holder['cc'])
 
     def _docker_compose(master_compose, **kwargs):
         return _cc_docker_compose(master_compose, project_name=_name, **kwargs)
@@ -1631,6 +1723,7 @@ def cc_init(
         'composables_url': _composables_url,
         'staging_dir': _staging_dir,
         'orchestrator_dir': _orchestrator_dir,
+        'repo_root': _repo_root,  # TODO: Remove when migration paths are no longer needed.
 
         # Composables dict (mutable, populated by use())
         'composables': _get_composables,
@@ -1696,6 +1789,7 @@ def cc_test_exports():
         'cc_parse_cli_plugins': _cc_parse_cli_plugins,
         'cc_docker_compose': _cc_docker_compose,
         'get_active_profiles': _cc_get_active_profiles,
+        'normalize_depends_on': util.normalize_depends_on,
         # Other utilities
         'parse_url_with_ref': util.parse_url_with_ref,
         'get_compose_path_from_dep': _get_compose_path_from_dep,
@@ -1709,4 +1803,5 @@ def cc_test_exports():
         'get_tilt_data_dir': _get_tilt_data_dir,
         'get_tilt_module_cache_path': _get_tilt_module_cache_path,
         'detect_tiltfile_path': _detect_tiltfile_path,
+        'ensure_repo_cloned': _ensure_repo_cloned,
     }

@@ -1,6 +1,8 @@
 # Tests for compose_composer extension
 # Run with: tilt ci (from this directory)
 # Or: make test (from parent directory)
+allow_k8s_contexts(k8s_context())
+
 
 # Only load public API (cc_init) and test exports function
 load('../Tiltfile', 'cc_test_exports', 'cc_init')
@@ -21,6 +23,7 @@ add_target_wrapper = _internals['add_target_wrapper']
 flatten_dependency_tree = _internals['flatten_dependency_tree']
 is_dep_included_by_profile = _internals['is_dep_included_by_profile']
 parse_url_with_ref = _internals['parse_url_with_ref']
+normalize_depends_on = _internals['normalize_depends_on']
 get_compose_path_from_dep = _internals['get_compose_path_from_dep']
 is_named_volume = _internals['is_named_volume']
 run_plugin_setup = _internals['run_plugin_setup']
@@ -132,6 +135,107 @@ def test_deep_merge_compose_overrides():
     assert_equals(result['services']['grafana']['environment']['VAR2'], 'val2')
     assert_equals(len(result['services']['grafana']['volumes']), 2)
     print("  [PASS] test_deep_merge_compose_overrides")
+
+# ============================================================================
+# depends_on Normalization Tests
+# ============================================================================
+
+def test_normalize_depends_on_list_to_dict():
+    """Test normalizing list-format depends_on to dict format."""
+    result = normalize_depends_on(['redis', 'postgres'])
+    assert_equals(type(result), 'dict', "Should return dict")
+    assert_true('redis' in result, "Should have redis key")
+    assert_true('postgres' in result, "Should have postgres key")
+    assert_equals(result['redis']['condition'], 'service_started', "Should default to service_started")
+    assert_equals(result['postgres']['condition'], 'service_started', "Should default to service_started")
+    print("  [PASS] test_normalize_depends_on_list_to_dict")
+
+def test_normalize_depends_on_dict_passthrough():
+    """Test dict-format depends_on passes through unchanged."""
+    input = {'redis': {'condition': 'service_healthy'}}
+    result = normalize_depends_on(input)
+    assert_equals(result['redis']['condition'], 'service_healthy', "Should preserve condition")
+    print("  [PASS] test_normalize_depends_on_dict_passthrough")
+
+def test_normalize_depends_on_empty_list():
+    """Test normalizing empty list."""
+    result = normalize_depends_on([])
+    assert_equals(result, {}, "Empty list should produce empty dict")
+    print("  [PASS] test_normalize_depends_on_empty_list")
+
+def test_deep_merge_depends_on_list_list():
+    """Test merging list+list depends_on (existing behavior, regression test)."""
+    base = {'depends_on': ['redis']}
+    override = {'depends_on': ['postgres']}
+    result = deep_merge(base, override)
+    assert_equals(len(result['depends_on']), 2, "Should concatenate lists")
+    assert_in('redis', result['depends_on'])
+    assert_in('postgres', result['depends_on'])
+    print("  [PASS] test_deep_merge_depends_on_list_list")
+
+def test_deep_merge_depends_on_dict_dict():
+    """Test merging dict+dict depends_on (existing behavior, regression test)."""
+    base = {'depends_on': {'redis': {'condition': 'service_healthy'}}}
+    override = {'depends_on': {'postgres': {'condition': 'service_started'}}}
+    result = deep_merge(base, override)
+    assert_true('redis' in result['depends_on'], "Should have redis")
+    assert_true('postgres' in result['depends_on'], "Should have postgres")
+    assert_equals(result['depends_on']['redis']['condition'], 'service_healthy')
+    assert_equals(result['depends_on']['postgres']['condition'], 'service_started')
+    print("  [PASS] test_deep_merge_depends_on_dict_dict")
+
+def test_deep_merge_depends_on_list_dict():
+    """Test merging list+dict depends_on (new — should normalize and merge)."""
+    base = {'depends_on': ['redis']}
+    override = {'depends_on': {'postgres': {'condition': 'service_healthy'}}}
+    result = deep_merge(base, override)
+    assert_equals(type(result['depends_on']), 'dict', "Result should be dict format")
+    assert_true('redis' in result['depends_on'], "Should have redis from base")
+    assert_true('postgres' in result['depends_on'], "Should have postgres from override")
+    assert_equals(result['depends_on']['redis']['condition'], 'service_started',
+                  "Normalized list entry should use service_started")
+    assert_equals(result['depends_on']['postgres']['condition'], 'service_healthy',
+                  "Dict entry should preserve its condition")
+    print("  [PASS] test_deep_merge_depends_on_list_dict")
+
+def test_deep_merge_depends_on_dict_list():
+    """Test merging dict+list depends_on (new — should normalize and merge)."""
+    base = {'depends_on': {'redis': {'condition': 'service_healthy'}}}
+    override = {'depends_on': ['postgres']}
+    result = deep_merge(base, override)
+    assert_equals(type(result['depends_on']), 'dict', "Result should be dict format")
+    assert_true('redis' in result['depends_on'], "Should have redis from base")
+    assert_true('postgres' in result['depends_on'], "Should have postgres from override")
+    assert_equals(result['depends_on']['redis']['condition'], 'service_healthy',
+                  "Dict entry should preserve its condition")
+    assert_equals(result['depends_on']['postgres']['condition'], 'service_started',
+                  "Normalized list entry should use service_started")
+    print("  [PASS] test_deep_merge_depends_on_dict_list")
+
+def test_deep_merge_depends_on_nested_in_services():
+    """Test depends_on normalization works when nested inside services structure."""
+    base = {
+        'services': {
+            'grafana': {
+                'depends_on': {'plugin-sync': {'condition': 'service_healthy'}},
+            },
+        },
+    }
+    override = {
+        'services': {
+            'grafana': {
+                'depends_on': ['aggregator-config'],
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    deps = result['services']['grafana']['depends_on']
+    assert_equals(type(deps), 'dict', "Nested depends_on should be dict")
+    assert_true('plugin-sync' in deps, "Should preserve plugin-sync")
+    assert_true('aggregator-config' in deps, "Should add aggregator-config")
+    assert_equals(deps['plugin-sync']['condition'], 'service_healthy')
+    assert_equals(deps['aggregator-config']['condition'], 'service_started')
+    print("  [PASS] test_deep_merge_depends_on_nested_in_services")
 
 # ============================================================================
 # local_compose Tests
@@ -2094,11 +2198,12 @@ def test_cc_init_default_orchestrator_dir():
     print("  [PASS] test_cc_init_default_orchestrator_dir")
 
 def test_cc_init_default_staging_dir():
-    """Test that staging_dir defaults to orchestrator_dir/.cc."""
+    """Test that staging_dir defaults to repo_root/.cc (which defaults to orchestrator_dir)."""
     cc = cc_init('test-project')
 
-    expected_staging = os.path.dirname(config.main_path) + '/.cc'
-    assert_equals(cc.staging_dir, expected_staging, "staging_dir should default to orchestrator_dir/.cc")
+    # Since repo_root defaults to orchestrator_dir, staging_dir is repo_root/.cc
+    expected_staging = cc.repo_root + '/.cc'
+    assert_equals(cc.staging_dir, expected_staging, "staging_dir should default to repo_root/.cc")
 
     print("  [PASS] test_cc_init_default_staging_dir")
 
@@ -2270,6 +2375,55 @@ def test_detect_tiltfile_path_collection_repo():
     print("  [PASS] test_detect_tiltfile_path_collection_repo")
 
 
+def test_cli_plugin_path_resolution_with_cc_tiltfile():
+    """
+    Test that CLI plugin paths resolve relative to repo_root, not cc/ subdirectory.
+
+    When repo_root is provided to cc_init(), CLI plugins should resolve relative
+    to that directory, not os.path.dirname(config.main_path).
+
+    This test verifies the fix for the bug where cc/Tiltfile migration mode
+    caused CLI plugins to resolve from cc/ instead of the repo root.
+    """
+    # The fake_migrating_repo has both Tiltfile and cc/Tiltfile
+    test_dir = os.path.dirname(config.main_path)
+    repo_root = test_dir + '/fixtures/fake_migrating_repo'
+
+    # Create cc with explicit repo_root (simulating cc/Tiltfile migration scenario)
+    # Even though orchestrator_dir would be repo_root/cc, CLI plugins resolve from repo_root
+    cc = cc_init('test-project', repo_root=repo_root)
+
+    # Verify repo_root is stored correctly
+    assert_equals(cc.repo_root, repo_root, "repo_root should be stored in cc struct")
+
+    # Verify staging_dir is relative to repo_root
+    assert_equals(cc.staging_dir, repo_root + '/.cc', "staging_dir should be relative to repo_root")
+
+    # Test that resolve_plugin_spec with repo_root gives correct path
+    cli_arg = '../sibling'
+    result = resolve_plugin_spec(cli_arg, repo_root)
+    result_path = result['url'].replace('file://', '')
+
+    # The path should NOT contain /cc/ since we're resolving from repo_root
+    assert_true('/cc/' not in result_path,
+        "CLI plugin should resolve from repo_root, not cc/")
+
+    # The path should go to fixtures/sibling (sibling of fake_migrating_repo)
+    # Note: Starlark doesn't normalize '..' so we check for the raw path structure
+    assert_true('fake_migrating_repo/../sibling' in result_path,
+        "CLI plugin should resolve to sibling of repo")
+
+    print("  [PASS] test_cli_plugin_path_resolution_with_cc_tiltfile")
+
+
+def test_cc_init_repo_root_defaults_to_orchestrator_dir():
+    """Test that repo_root defaults to orchestrator_dir when not provided."""
+    cc = cc_init('test-project')
+    assert_equals(cc.repo_root, cc.orchestrator_dir,
+        "repo_root should default to orchestrator_dir")
+    print("  [PASS] test_cc_init_repo_root_defaults_to_orchestrator_dir")
+
+
 # ============================================================================
 # Run All Tests
 # ============================================================================
@@ -2282,6 +2436,16 @@ def run_tests():
     test_deep_merge_lists_dedup()
     test_deep_merge_does_not_mutate()
     test_deep_merge_compose_overrides()
+
+    print("\n=== depends_on Normalization Tests ===")
+    test_normalize_depends_on_list_to_dict()
+    test_normalize_depends_on_dict_passthrough()
+    test_normalize_depends_on_empty_list()
+    test_deep_merge_depends_on_list_list()
+    test_deep_merge_depends_on_dict_dict()
+    test_deep_merge_depends_on_list_dict()
+    test_deep_merge_depends_on_dict_list()
+    test_deep_merge_depends_on_nested_in_services()
 
     print("\n=== Environment Variable Concatenation Tests ===")
     test_concatenation_url_http_should_not_concatenate()
@@ -2448,6 +2612,7 @@ def run_tests():
     test_cc_init_test_exports_method()
     test_cc_init_default_orchestrator_dir()
     test_cc_init_default_staging_dir()
+    test_cc_init_repo_root_defaults_to_orchestrator_dir()
 
     print("\n=== Master Compose Output Tests ===")
     test_master_compose_strips_internal_keys()
@@ -2463,6 +2628,7 @@ def run_tests():
     test_detect_tiltfile_path_prefers_cc_when_both_exist()
     test_detect_tiltfile_path_uses_default_when_no_cc()
     test_detect_tiltfile_path_collection_repo()
+    test_cli_plugin_path_resolution_with_cc_tiltfile()
 
     print("\n" + "=" * 50)
     print("All unit tests passed!")

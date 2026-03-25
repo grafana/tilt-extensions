@@ -49,6 +49,31 @@ def _should_concatenate_string(key, base_val, override_val):
 
     return False
 
+def _normalize_depends_on(val):
+    """
+    Normalize depends_on to dict format.
+
+    Docker Compose treats list and dict depends_on identically:
+      ['redis']  ==  {redis: {condition: service_started}}
+
+    This normalizes list format to dict format so _deep_merge can
+    always do dict+dict recursive merging for depends_on.
+
+    Args:
+        val: Either a list of service names or a dict of {name: {condition: ...}}
+
+    Returns:
+        Dict format depends_on
+    """
+    if type(val) == 'dict':
+        return val
+    if type(val) == 'list':
+        result = {}
+        for item in val:
+            result[item] = {'condition': 'service_started'}
+        return result
+    return val
+
 def _deep_merge(base, override):
     """
     Deep merge override into base.
@@ -83,6 +108,14 @@ def _deep_merge(base, override):
                     if item not in merged:
                         merged.append(item)
                 result[key] = merged
+            elif key == 'depends_on' and (
+                (base_type == 'dict' and override_type == 'list') or
+                (base_type == 'list' and override_type == 'dict')
+            ):
+                # Normalize both to dict format, then merge as dicts
+                normalized_base = _normalize_depends_on(result[key])
+                normalized_override = _normalize_depends_on(override[key])
+                result[key] = _deep_merge(normalized_base, normalized_override)
             elif _should_concatenate_string(key, result[key], override[key]):
                 # Concatenate comma-separated strings (e.g., WEBHOOK_OPERATORS)
                 base_val = result[key]
@@ -316,6 +349,7 @@ def _validate_volume_mounts(services_dict, plugin_name):
 # This is the standard Starlark pattern for creating namespaces
 util = struct(
     # Deep merge utilities
+    normalize_depends_on = _normalize_depends_on,
     deep_merge = _deep_merge,
     deep_copy = _deep_copy,
     should_concatenate_string = _should_concatenate_string,
