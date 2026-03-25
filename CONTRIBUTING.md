@@ -16,6 +16,9 @@ This repository contains Grafana internal [Tilt](https://tilt.dev/) extensions f
 ### Running Tests
 
 ```bash
+# Compose Composer tests
+cd compose_composer && make test
+
 # Grafana extension tests
 cd grafana/test && bash test.sh
 
@@ -23,7 +26,7 @@ cd grafana/test && bash test.sh
 cd var_subst && make test
 ```
 
-Both extensions use `tilt ci` for running tests in their respective test directories.
+All extensions use `tilt ci` for running tests in their respective test directories.
 
 ## How to Contribute
 
@@ -35,17 +38,27 @@ Both extensions use `tilt ci` for running tests in their respective test directo
 
 ## Extensions
 
-### Grafana Extension
+### Compose Composer
 
-The `grafana` extension is a wrapper over the Grafana Helm chart for multi-plugin development. It supports:
+The primary extension in this repository. Compose Composer enables dynamic, runtime assembly of Docker Compose environments from modular, reusable components called "[composables](https://github.com/grafana/composables)." Each composable wraps a docker-compose service and knows how to wire itself to other components when they're present.
 
-- Single plugin development with Tiltfile at plugin root
-- Parent project managing multiple plugins from separate repositories
-- Live updates for rapid development via file syncing
+Key concepts:
 
-### Variable Substitution Extension
+- **Composables** are Tilt extensions that wrap a docker-compose file and expose helper functions via `cc_export()`.
+- **Orchestrators** are composables where you run `tilt up`. Any composable can be an orchestrator.
+- **Wire-when rules** define declarative wiring — how components configure themselves when other dependencies are present.
 
-The `var_subst` extension provides `${VAR}` and `${VAR:-default}` pattern replacement in templates with environment variable lookup.
+The companion [grafana/composables](https://github.com/grafana/composables) repository contains reusable composables (grafana, mysql, redis, k3s-apiserver, etc.) used across Grafana development.
+
+See the [compose_composer README](compose_composer/README.md) for full documentation and examples.
+
+### Other Extensions
+
+- **grafana/** - A wrapper over the Grafana Helm chart for multi-plugin development (single or multi-plugin, with live update support)
+- **helm_chart/** - Utilities for working with Helm charts in Tilt
+- **merge_dicts/** - Deep dictionary merging utility
+- **post_build/** - Post-build step support for Tilt resources
+- **var_subst/** - Variable substitution (`${VAR}` and `${VAR:-default}`) in templates
 
 ## Code Style
 
