@@ -19,10 +19,11 @@ _CONCAT_ENV_VARS = [
     'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
 ]
 
-# Docker Compose service-level keys whose string values should always be replaced,
-# never concatenated.  These are keys where the colon character appears naturally
-# (e.g. image tags "postgres:12.7", commands "java -jar /app:main") but the value
-# is a single atomic setting, not a comma-separated accumulator.
+# Docker Compose service-level keys whose values should always be replaced,
+# never concatenated.  Applies to both string and list forms of the same key
+# (e.g. "command" can be a string "java -cp /app:libs Main" or a list
+# ["java", "-cp", "/app:libs", "Main"]).  These are single atomic settings,
+# not comma-separated or list accumulators.
 _REPLACE_STRING_KEYS = [
     'image',
     'command',
@@ -128,12 +129,16 @@ def _deep_merge(base, override):
             if base_type == 'dict' and override_type == 'dict':
                 result[key] = _deep_merge(result[key], override[key])
             elif base_type == 'list' and override_type == 'list':
-                # Concatenate lists, avoiding duplicates for simple values
-                merged = list(result[key])
-                for item in override[key]:
-                    if item not in merged:
-                        merged.append(item)
-                result[key] = merged
+                if key in _REPLACE_STRING_KEYS:
+                    # Atomic keys like command/entrypoint: list form should replace too
+                    result[key] = override[key]
+                else:
+                    # Concatenate lists, avoiding duplicates for simple values
+                    merged = list(result[key])
+                    for item in override[key]:
+                        if item not in merged:
+                            merged.append(item)
+                    result[key] = merged
             elif key == 'depends_on' and (
                 (base_type == 'dict' and override_type == 'list') or
                 (base_type == 'list' and override_type == 'dict')

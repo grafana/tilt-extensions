@@ -1948,68 +1948,82 @@ def test_concatenation_image_with_sha_should_replace():
                   "SHA-pinned image should be replaced, not concatenated")
     print("  [PASS] test_concatenation_image_with_sha_should_replace")
 
-def test_concatenation_container_name_should_replace():
-    """Test that container_name is replaced, not concatenated."""
+def test_concatenation_user_should_replace():
+    """Test that user (uid:gid form) is replaced, not concatenated.
+
+    Regression test: 'user' values like '1000:1000' contain colons which
+    would trigger the colon heuristic and cause concatenation without the fix.
+    """
     base = {
         'services': {
             'db': {
-                'container_name': 'old-name:v1',
+                'user': '1000:1000',
             },
         },
     }
     override = {
         'services': {
             'db': {
-                'container_name': 'new-name:v2',
+                'user': '2000:2000',
             },
         },
     }
     result = deep_merge(base, override)
-    assert_equals(result['services']['db']['container_name'], 'new-name:v2',
-                  "container_name should be replaced, not concatenated")
-    print("  [PASS] test_concatenation_container_name_should_replace")
+    assert_equals(result['services']['db']['user'], '2000:2000',
+                  "user should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_user_should_replace")
 
 def test_concatenation_command_string_should_replace():
-    """Test that command (string form) is replaced, not concatenated."""
+    """Test that command (string form) is replaced, not concatenated.
+
+    Regression test: both values contain colons (Java classpath separator)
+    which would trigger the colon heuristic and cause concatenation without
+    the fix.
+    """
     base = {
         'services': {
-            'db': {
-                'command': 'postgres --config_file=/etc/postgresql/postgresql.conf',
+            'app': {
+                'command': 'java -cp /app:libs app.Main',
             },
         },
     }
     override = {
         'services': {
-            'db': {
-                'command': 'postgres --config_file=/custom/path:override',
+            'app': {
+                'command': 'java -cp /custom:newlibs app.Main',
             },
         },
     }
     result = deep_merge(base, override)
-    assert_equals(result['services']['db']['command'], 'postgres --config_file=/custom/path:override',
+    assert_equals(result['services']['app']['command'], 'java -cp /custom:newlibs app.Main',
                   "command string should be replaced, not concatenated")
     print("  [PASS] test_concatenation_command_string_should_replace")
 
-def test_concatenation_platform_should_replace():
-    """Test that platform is replaced, not concatenated."""
+def test_concatenation_network_mode_should_replace():
+    """Test that network_mode is replaced, not concatenated.
+
+    Regression test: 'network_mode' values like 'service:db' contain colons
+    which would trigger the colon heuristic and cause concatenation without
+    the fix.
+    """
     base = {
         'services': {
             'app': {
-                'platform': 'linux/amd64',
+                'network_mode': 'service:db',
             },
         },
     }
     override = {
         'services': {
             'app': {
-                'platform': 'linux/arm64',
+                'network_mode': 'service:cache',
             },
         },
     }
     result = deep_merge(base, override)
-    assert_equals(result['services']['app']['platform'], 'linux/arm64',
-                  "platform should be replaced, not concatenated")
-    print("  [PASS] test_concatenation_platform_should_replace")
+    assert_equals(result['services']['app']['network_mode'], 'service:cache',
+                  "network_mode should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_network_mode_should_replace")
 
 def test_concatenation_restart_should_replace():
     """Test that restart policy is replaced, not concatenated."""
@@ -2057,6 +2071,53 @@ def test_concatenation_colon_env_var_still_concatenates():
     assert_in('svc1:ns1', custom_val, "Base colon-list entries should be preserved")
     assert_in('svc3:ns3', custom_val, "Override colon-list entries should be added")
     print("  [PASS] test_concatenation_colon_env_var_still_concatenates")
+
+def test_concatenation_command_list_should_replace():
+    """Test that command in list form is replaced, not concatenated.
+
+    Regression test: 'command' as a YAML list was still being concatenated
+    (list+list append) even after the string fix, because _deep_merge's list
+    branch did not check _REPLACE_STRING_KEYS.
+    """
+    base = {
+        'services': {
+            'app': {
+                'command': ['python', '-m', 'app', '--env', 'dev'],
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'command': ['python', '-m', 'app', '--env', 'prod'],
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['command'], ['python', '-m', 'app', '--env', 'prod'],
+                  "command list should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_command_list_should_replace")
+
+def test_concatenation_entrypoint_list_should_replace():
+    """Test that entrypoint in list form is replaced, not concatenated."""
+    base = {
+        'services': {
+            'app': {
+                'entrypoint': ['/bin/sh', '-c'],
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'entrypoint': ['/bin/bash', '-c'],
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['entrypoint'], ['/bin/bash', '-c'],
+                  "entrypoint list should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_entrypoint_list_should_replace")
 
 # ============================================================================
 # Phase 2: Dictionary Key Validation Tests (Bug #2 - Fixed)
@@ -2641,11 +2702,13 @@ def run_tests():
     test_concatenation_image_override_should_replace()
     test_concatenation_image_with_registry_should_replace()
     test_concatenation_image_with_sha_should_replace()
-    test_concatenation_container_name_should_replace()
+    test_concatenation_user_should_replace()
     test_concatenation_command_string_should_replace()
-    test_concatenation_platform_should_replace()
+    test_concatenation_network_mode_should_replace()
     test_concatenation_restart_should_replace()
     test_concatenation_colon_env_var_still_concatenates()
+    test_concatenation_command_list_should_replace()
+    test_concatenation_entrypoint_list_should_replace()
 
     print("\n=== cc_local_composable Tests ===")
     test_cc_create_basic()
