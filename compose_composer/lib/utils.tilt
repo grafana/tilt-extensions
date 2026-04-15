@@ -19,6 +19,28 @@ _CONCAT_ENV_VARS = [
     'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
 ]
 
+# Docker Compose service-level keys whose string values should always be replaced,
+# never concatenated.  These are keys where the colon character appears naturally
+# (e.g. image tags "postgres:12.7", commands "java -jar /app:main") but the value
+# is a single atomic setting, not a comma-separated accumulator.
+_REPLACE_STRING_KEYS = [
+    'image',
+    'command',
+    'entrypoint',
+    'container_name',
+    'restart',
+    'platform',
+    'hostname',
+    'domainname',
+    'user',
+    'working_dir',
+    'network_mode',
+    'pid',
+    'ipc',
+    'stop_signal',
+    'runtime',
+]
+
 def _should_concatenate_string(key, base_val, override_val):
     """
     Check if this string should be concatenated rather than replaced.
@@ -30,6 +52,10 @@ def _should_concatenate_string(key, base_val, override_val):
     """
     # Only for string values (Starlark type() returns "string", not str)
     if type(base_val) != 'string' or type(override_val) != 'string':
+        return False
+
+    # Docker Compose service keys that are always atomic — never concatenate
+    if key in _REPLACE_STRING_KEYS:
         return False
 
     # Check if key is in known concat list
@@ -354,6 +380,7 @@ util = struct(
     deep_copy = _deep_copy,
     should_concatenate_string = _should_concatenate_string,
     CONCAT_ENV_VARS = _CONCAT_ENV_VARS,
+    REPLACE_STRING_KEYS = _REPLACE_STRING_KEYS,
 
     # URL utilities
     is_url = _is_url,

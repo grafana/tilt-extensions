@@ -1880,6 +1880,184 @@ def test_concatenation_mixed_url_and_plain_should_not_concatenate():
                   "URL in base should prevent concatenation")
     print("  [PASS] test_concatenation_mixed_url_and_plain_should_not_concatenate")
 
+def test_concatenation_image_override_should_replace():
+    """Test that Docker image references are replaced, not concatenated.
+
+    Regression test: 'image' values like 'postgres:12.7' contain colons which
+    previously triggered the colon heuristic and caused concatenation
+    ('pgvector/pgvector:pg18,postgres:12.7') instead of replacement.
+    """
+    base = {
+        'services': {
+            'pgdb': {
+                'image': 'pgvector/pgvector:pg18',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'pgdb': {
+                'image': 'postgres:12.7',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['pgdb']['image'], 'postgres:12.7',
+                  "Docker image should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_image_override_should_replace")
+
+def test_concatenation_image_with_registry_should_replace():
+    """Test that fully-qualified image references with registries are replaced."""
+    base = {
+        'services': {
+            'app': {
+                'image': 'docker.io/library/redis:7.0',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'image': 'quay.io/custom/redis:7.2-alpine',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['image'], 'quay.io/custom/redis:7.2-alpine',
+                  "Fully-qualified image should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_image_with_registry_should_replace")
+
+def test_concatenation_image_with_sha_should_replace():
+    """Test that image references pinned to SHA digests are replaced."""
+    base = {
+        'services': {
+            'app': {
+                'image': 'amazoncorretto:21.0.8@sha256:4599af808338fc153b3d921e5e85797a477320cb677d5c672390b790159eebd1',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'image': 'amazoncorretto:21.0.5@sha256:abcdef1234567890',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['image'], 'amazoncorretto:21.0.5@sha256:abcdef1234567890',
+                  "SHA-pinned image should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_image_with_sha_should_replace")
+
+def test_concatenation_container_name_should_replace():
+    """Test that container_name is replaced, not concatenated."""
+    base = {
+        'services': {
+            'db': {
+                'container_name': 'old-name:v1',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'db': {
+                'container_name': 'new-name:v2',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['db']['container_name'], 'new-name:v2',
+                  "container_name should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_container_name_should_replace")
+
+def test_concatenation_command_string_should_replace():
+    """Test that command (string form) is replaced, not concatenated."""
+    base = {
+        'services': {
+            'db': {
+                'command': 'postgres --config_file=/etc/postgresql/postgresql.conf',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'db': {
+                'command': 'postgres --config_file=/custom/path:override',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['db']['command'], 'postgres --config_file=/custom/path:override',
+                  "command string should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_command_string_should_replace")
+
+def test_concatenation_platform_should_replace():
+    """Test that platform is replaced, not concatenated."""
+    base = {
+        'services': {
+            'app': {
+                'platform': 'linux/amd64',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'platform': 'linux/arm64',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['platform'], 'linux/arm64',
+                  "platform should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_platform_should_replace")
+
+def test_concatenation_restart_should_replace():
+    """Test that restart policy is replaced, not concatenated."""
+    base = {
+        'services': {
+            'app': {
+                'restart': 'on-failure:3',
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'restart': 'on-failure:5',
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    assert_equals(result['services']['app']['restart'], 'on-failure:5',
+                  "restart should be replaced, not concatenated")
+    print("  [PASS] test_concatenation_restart_should_replace")
+
+def test_concatenation_colon_env_var_still_concatenates():
+    """Test that the colon heuristic still works for env vars not in the blocklist."""
+    base = {
+        'services': {
+            'app': {
+                'environment': {
+                    'MY_CUSTOM_LIST': 'svc1:ns1,svc2:ns2',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'app': {
+                'environment': {
+                    'MY_CUSTOM_LIST': 'svc3:ns3',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    custom_val = result['services']['app']['environment']['MY_CUSTOM_LIST']
+    assert_in('svc1:ns1', custom_val, "Base colon-list entries should be preserved")
+    assert_in('svc3:ns3', custom_val, "Override colon-list entries should be added")
+    print("  [PASS] test_concatenation_colon_env_var_still_concatenates")
+
 # ============================================================================
 # Phase 2: Dictionary Key Validation Tests (Bug #2 - Fixed)
 # These tests verify the fix handles missing keys gracefully
@@ -2458,7 +2636,17 @@ def run_tests():
     test_concatenation_colon_non_url_should_concatenate()
     test_concatenation_simple_strings_should_replace()
     test_concatenation_mixed_url_and_plain_should_not_concatenate()
-    
+
+    print("\n=== Docker Compose Key Override Tests ===")
+    test_concatenation_image_override_should_replace()
+    test_concatenation_image_with_registry_should_replace()
+    test_concatenation_image_with_sha_should_replace()
+    test_concatenation_container_name_should_replace()
+    test_concatenation_command_string_should_replace()
+    test_concatenation_platform_should_replace()
+    test_concatenation_restart_should_replace()
+    test_concatenation_colon_env_var_still_concatenates()
+
     print("\n=== cc_local_composable Tests ===")
     test_cc_create_basic()
     test_cc_create_with_dependencies()
