@@ -1798,6 +1798,32 @@ def test_concatenation_feature_toggles_should_concatenate():
     assert_in('feature3', features, "Override features should be added")
     print("  [PASS] test_concatenation_feature_toggles_should_concatenate")
 
+def test_concatenation_forward_host_env_vars_should_concatenate():
+    """Test that GF_PLUGINS_FORWARD_HOST_ENV_VARS should concatenate correctly."""
+    base = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_PLUGINS_FORWARD_HOST_ENV_VARS': 'grafana-workflows-app',
+                },
+            },
+        },
+    }
+    override = {
+        'services': {
+            'grafana': {
+                'environment': {
+                    'GF_PLUGINS_FORWARD_HOST_ENV_VARS': 'grafana-assistant-app',
+                },
+            },
+        },
+    }
+    result = deep_merge(base, override)
+    forward_val = result['services']['grafana']['environment']['GF_PLUGINS_FORWARD_HOST_ENV_VARS']
+    assert_in('grafana-workflows-app', forward_val, "Base plugin should be present")
+    assert_in('grafana-assistant-app', forward_val, "Override plugin should be added")
+    print("  [PASS] test_concatenation_forward_host_env_vars_should_concatenate")
+
 def test_concatenation_colon_non_url_should_concatenate():
     """Test that non-URL strings with colons should concatenate (heuristic fallback)."""
     base = {
@@ -2455,6 +2481,7 @@ def run_tests():
     test_concatenation_url_ftp_should_not_concatenate()
     test_concatenation_webhook_operators_should_concatenate()
     test_concatenation_feature_toggles_should_concatenate()
+    test_concatenation_forward_host_env_vars_should_concatenate()
     test_concatenation_colon_non_url_should_concatenate()
     test_concatenation_simple_strings_should_replace()
     test_concatenation_mixed_url_and_plain_should_not_concatenate()
