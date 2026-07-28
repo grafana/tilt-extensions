@@ -16,6 +16,7 @@ _CONCAT_ENV_VARS = [
     'WEBHOOK_OPERATORS',  # Multiple webhook operators (op1:ns1,op2:ns2)
     'API_GROUPS',          # For future use with API aggregation
     'GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS',  # Comma-separated plugin IDs
+    'GF_PLUGINS_FORWARD_HOST_ENV_VARS',  # Comma-separated plugin IDs for env forwarding
     'GF_FEATURE_TOGGLES_ENABLE',  # Comma-separated feature toggle names
 ]
 
