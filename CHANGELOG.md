@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.6](https://github.com/grafana/tilt-extensions/compare/v1.7.5...v1.7.6) (2026-07-28)
+
+
+### Bug Fixes
+
+* **compose_composer:** concatenate GF_PLUGINS_FORWARD_HOST_ENV_VARS on deep merge ([#59](https://github.com/grafana/tilt-extensions/issues/59)) ([bed481b](https://github.com/grafana/tilt-extensions/commit/bed481bf42a4bd7e8f657a5d78cb82206d703c93))
+
 ## [1.7.5](https://github.com/grafana/tilt-extensions/compare/v1.7.4...v1.7.5) (2026-04-16)
 
 
